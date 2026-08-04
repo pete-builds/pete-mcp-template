@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    name: Render (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The template branches on transport and python_min_version, so one
+        # default render is not enough to prove it renders.
+        include:
+          - name: defaults
+            project_name: MCP Weather
+            transport: streamable-http
+            python_min: "3.11"
+          - name: stdio-py313
+            project_name: MCP Tidepool
+            transport: stdio
+            python_min: "3.13"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install copier
+        run: pip install copier pyyaml
+
+      - name: Render
+        env:
+          PROJECT_NAME: ${{ matrix.project_name }}
+          TRANSPORT: ${{ matrix.transport }}
+          PYTHON_MIN: ${{ matrix.python_min }}
+        run: |
+          copier copy --trust --defaults \
+            -d "project_name=$PROJECT_NAME" \
+            -d "description=Rendered by CI to validate the template." \
+            -d "default_transport=$TRANSPORT" \
+            -d "python_min_version=$PYTHON_MIN" \
+            . /tmp/out
+
+      - name: Validate rendered output
+        run: python scripts/validate_render.py /tmp/out
+
+  # TODO: a second job that installs the rendered project and runs its own
+  # pytest, ruff, and mypy. It cannot pass yet: the template defaults to
+  # `pete_mcp_core_version: ">=0.1.0"` and pete-mcp-core is not on PyPI, so
+  # `pip install -e ".[dev]"` in a freshly scaffolded project fails to resolve
+  # the dependency. Add it in the same change that confirms the publish, so this
+  # repo proves its output runs rather than only that it renders.

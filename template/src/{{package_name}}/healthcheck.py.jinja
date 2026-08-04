@@ -1,0 +1,11 @@
+"""Health check for Docker HEALTHCHECK.
+
+Thin shim over :func:`pete_mcp_core.healthcheck.main` so the container
+directive (``python -m {{ package_name }}.healthcheck``) keeps working
+even if you later add a custom ``/health`` route.
+"""
+
+from pete_mcp_core.healthcheck import main
+
+if __name__ == "__main__":
+    main()

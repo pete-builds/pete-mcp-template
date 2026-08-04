@@ -1,0 +1,46 @@
+# {{ project_name }}
+
+{{ description }}
+
+Built on [pete-mcp-core](https://github.com/pete-builds/pete-mcp-core) — structured logging, healthcheck, transport wiring, and settings all come from the shared library.
+
+## Install
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+## Run
+
+```bash
+# stdio (for Claude Desktop)
+python -m {{ package_name }}.server
+
+# streamable-http (for remote MCP clients)
+MCP_TRANSPORT=streamable-http python -m {{ package_name }}.server
+```
+
+Or with Docker:
+
+```bash
+docker compose up --build
+```
+
+## Configure
+
+Copy `.env.example` to `.env` and edit. All variables are optional; sensible defaults live in [pete-mcp-core's settings](https://github.com/pete-builds/pete-mcp-core/blob/main/src/pete_mcp_core/settings.py).
+
+For production HTTP deploys, set `MCP_AUTH_TOKEN` (generate with `openssl rand -hex 32`) and `MCP_AUTH_REQUIRED=true` to fail closed if the token is unset.
+
+## Test
+
+```bash
+pytest
+```
+
+CI runs on Python {{ python_min_version }}+ across a matrix.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

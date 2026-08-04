@@ -1,0 +1,29 @@
+# Contributing
+
+## Setup
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+## Checks
+
+```bash
+ruff check .
+ruff format --check .
+mypy
+pytest
+```
+
+CI runs the same suite on the {{ python_min_version }}+ matrix; a green local run should mean a green CI.
+
+## Commit style
+
+One commit per logical change. Message body explains *why*, not *what*. Reference issues by number when applicable.
+
+## Adding a new tool
+
+Add a function to `src/{{ package_name }}/server.py`, decorated with `@mcp.tool()` and (for handlers that talk to external systems) `@tool_errors("{{ package_name }}", catch=YourError)`. Type hints become the tool's JSON schema — write them precisely.
+
+Include a docstring — the first line becomes the tool description shown to the LLM.

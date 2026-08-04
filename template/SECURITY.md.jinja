@@ -1,0 +1,21 @@
+# Security policy
+
+## Supported versions
+
+The `main` branch is the only supported version.
+
+## Reporting a vulnerability
+
+Please report vulnerabilities privately to {{ author_email }} rather than filing a public issue. Include:
+
+- Affected version / commit
+- Steps to reproduce
+- Impact assessment
+
+Expect an initial response within 72 hours.
+
+## Threat model notes
+
+- The streamable-http transport accepts unauthenticated requests by default. For any deploy beyond localhost, set `MCP_AUTH_TOKEN` and `MCP_AUTH_REQUIRED=true` to fail closed.
+- API keys and secrets should be passed via env vars (see `.env.example`) and are automatically scrubbed from the structured JSON logs by [pete-mcp-core](https://github.com/pete-builds/pete-mcp-core).
+- Tool inputs and outputs are attacker-influenceable when the server queries external systems. Prefer opt-in destructive operations with a `dry_run` default; treat any string returned to the LLM from a third party as untrusted.

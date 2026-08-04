@@ -1,0 +1,87 @@
+_min_copier_version: "9.0"
+_subdirectory: template
+_templates_suffix: .jinja
+
+_message_before_copy: |
+  Scaffolding a new MCP server on pete-mcp-core.
+  Answer the prompts below; sensible defaults derive from the project name.
+
+_message_after_copy: |
+  Done. Next steps:
+
+    1. cd into the new directory
+    2. python -m venv .venv && source .venv/bin/activate
+    3. pip install -e ".[dev]"
+    4. pytest                             (smoke test passes out of the box)
+    5. python -m {{ package_name }}.server (starts stdio transport)
+
+  When you're ready to publish:
+    gh repo create {{ github_org }}/{{ repo_name }} --public --source . --push
+
+# --- questions ---
+
+project_name:
+  type: str
+  help: "Human-readable project name (e.g. 'MCP Weather')."
+
+package_name:
+  type: str
+  help: "Python package name (snake_case, e.g. 'mcp_weather')."
+  default: "{{ project_name.lower().replace(' ', '_').replace('-', '_') }}"
+  validator: >-
+    {% if not (package_name | regex_search('^[a-z][a-z0-9_]*$')) %}
+    Must be snake_case starting with a letter.
+    {% endif %}
+
+repo_name:
+  type: str
+  help: "GitHub repo name (kebab-case, e.g. 'mcp-weather')."
+  default: "{{ package_name.replace('_', '-') }}"
+
+server_display_name:
+  type: str
+  help: "Name shown to MCP clients (short, capitalized). E.g. 'Weather'."
+  default: "{{ project_name.replace('MCP ', '').replace('mcp-', '') }}"
+
+description:
+  type: str
+  help: "One-sentence description (used in pyproject and the README)."
+
+author_name:
+  type: str
+  default: "Pete Stergion"
+
+author_email:
+  type: str
+  default: "pstergion@gmail.com"
+
+github_org:
+  type: str
+  default: "pete-builds"
+
+default_port:
+  type: int
+  help: "Default streamable-http port for local dev and Docker."
+  default: 3800
+
+default_transport:
+  type: str
+  choices:
+    - stdio
+    - streamable-http
+  default: streamable-http
+  help: "Default transport. streamable-http exposes /mcp; stdio is for Claude Desktop."
+
+python_min_version:
+  type: str
+  choices:
+    - "3.11"
+    - "3.12"
+    - "3.13"
+  default: "3.11"
+  help: "Minimum Python version. CI matrix runs this version and newer."
+
+pete_mcp_core_version:
+  type: str
+  default: ">=0.1.0"
+  help: "Version specifier for pete-mcp-core dependency."

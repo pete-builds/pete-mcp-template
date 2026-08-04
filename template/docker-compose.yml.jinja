@@ -1,0 +1,14 @@
+services:
+  {{ repo_name }}:
+    build: .
+    container_name: {{ repo_name }}
+    restart: unless-stopped
+    ports:
+      - "{{ default_port }}:{{ default_port }}"
+    env_file:
+      - .env
+    environment:
+      MCP_TRANSPORT: streamable-http
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "{{ default_port }}"
+      MCP_LOG_FORMAT: json

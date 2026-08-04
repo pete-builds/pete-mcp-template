@@ -1,0 +1,35 @@
+FROM python:{{ python_min_version }}-slim AS builder
+
+WORKDIR /build
+COPY pyproject.toml README.md LICENSE ./
+COPY src ./src
+RUN pip install --no-cache-dir --upgrade pip build && \
+    python -m build --wheel --outdir /wheels .
+
+
+FROM python:{{ python_min_version }}-slim AS runtime
+
+# CVE catchup for the base image.
+RUN apt-get update && apt-get -y upgrade && \
+    rm -rf /var/lib/apt/lists/*
+
+# Non-root user for the runtime.
+RUN groupadd -r -g 1000 mcp && useradd -r -u 1000 -g mcp -m -d /home/mcp -s /bin/bash mcp
+
+COPY --from=builder /wheels /wheels
+RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
+
+USER mcp
+WORKDIR /home/mcp
+
+EXPOSE {{ default_port }}
+
+ENV MCP_TRANSPORT={{ default_transport }} \
+    MCP_HOST=0.0.0.0 \
+    MCP_PORT={{ default_port }} \
+    MCP_LOG_FORMAT=json
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD python -m {{ package_name }}.healthcheck || exit 1
+
+CMD ["python", "-m", "{{ package_name }}.server"]

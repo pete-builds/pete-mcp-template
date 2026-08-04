@@ -1,0 +1,44 @@
+"""Smoke tests for {{ project_name }}."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolated_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MCP_TRANSPORT", "stdio")
+    monkeypatch.setenv("MCP_LOG_FORMAT", "text")
+    monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+
+
+def test_server_module_loads() -> None:
+    from {{ package_name }} import server
+
+    assert server.mcp is not None
+    assert server.mcp.name == "{{ server_display_name }}"
+
+
+async def test_hello_tool_returns_greeting() -> None:
+    from {{ package_name }}.server import hello
+
+    result = await hello("pete")
+    parsed = json.loads(result)
+    assert parsed == {"greeting": "hello, pete"}
+
+
+async def test_hello_tool_default_name() -> None:
+    from {{ package_name }}.server import hello
+
+    result = await hello()
+    assert json.loads(result) == {"greeting": "hello, world"}
+
+
+async def test_tool_registered() -> None:
+    from {{ package_name }}.server import mcp
+
+    tools = await mcp._list_tools()
+    tool_names = {t.name for t in tools}
+    assert "hello" in tool_names

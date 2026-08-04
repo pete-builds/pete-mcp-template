@@ -1,0 +1,111 @@
+[build-system]
+requires = ["hatchling>=1.30.1"]
+build-backend = "hatchling.build"
+
+[project]
+name = "{{ repo_name }}"
+version = "0.1.0"
+description = "{{ description }}"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "{{ author_name }}", email = "{{ author_email }}" }]
+requires-python = ">={{ python_min_version }}"
+keywords = ["mcp", "fastmcp", "claude"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "fastmcp>=3.4.0",
+    "httpx>=0.28.1",
+    "python-dotenv>=1.1.0",
+    "pete-mcp-core{{ pete_mcp_core_version }}",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=1.0.0",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.15.0",
+    "mypy>=1.14.0",
+]
+
+[project.scripts]
+{{ repo_name }} = "{{ package_name }}.server:main"
+
+[project.urls]
+Homepage = "https://github.com/{{ github_org }}/{{ repo_name }}"
+Repository = "https://github.com/{{ github_org }}/{{ repo_name }}"
+Issues = "https://github.com/{{ github_org }}/{{ repo_name }}/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/{{ package_name }}"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/README.md",
+    "/LICENSE",
+    "/.env.example",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--cov={{ package_name }}",
+    "--cov-report=term-missing",
+]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+branch = true
+source = ["{{ package_name }}"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py{{ python_min_version.replace('.', '') }}"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "C4", "S", "RUF"]
+ignore = ["S101", "S104"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S105", "S106", "S311"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "{{ python_min_version }}"
+strict = true
+mypy_path = ["src"]
+files = ["src/{{ package_name }}"]
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = ["fastmcp", "fastmcp.*"]
+ignore_missing_imports = true

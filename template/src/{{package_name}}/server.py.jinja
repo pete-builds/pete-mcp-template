@@ -1,0 +1,59 @@
+"""{{ project_name }} - {{ description }}"""
+
+from __future__ import annotations
+
+import logging
+
+from dotenv import load_dotenv
+from fastmcp import FastMCP
+from pete_mcp_core import (
+    build_auth_provider,
+    configure_logging,
+    format_response,
+    run_server,
+    tool_errors,
+)
+
+from {{ package_name }}.settings import Settings
+
+load_dotenv()
+
+settings = Settings()
+configure_logging(settings.log_level, settings.log_format)
+log = logging.getLogger("{{ package_name }}")
+
+mcp: FastMCP = FastMCP(
+    "{{ server_display_name }}",
+    auth=build_auth_provider(
+        settings.auth_token,
+        client_id="{{ package_name }}",
+        required=settings.auth_required,
+        logger=log,
+    ),
+)
+
+
+@mcp.tool()
+@tool_errors("{{ package_name }}")
+async def hello(name: str = "world") -> str:
+    """Sample tool. Replace with your own.
+
+    Args:
+        name: Who to greet.
+
+    Returns:
+        A JSON envelope with the greeting.
+    """
+    return format_response({"greeting": f"hello, {name}"})
+
+
+def main() -> None:
+    run_server(
+        mcp,
+        default_port={{ default_port }},
+        default_transport="{{ default_transport }}",
+    )
+
+
+if __name__ == "__main__":
+    main()

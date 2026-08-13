@@ -41,3 +41,22 @@ jobs:
 
       - name: pytest with coverage
         run: pytest -v
+
+  scan:
+    name: Trivy filesystem scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Pinned to a commit, not a tag. The March 2026 trivy-action compromise
+      # force-pushed 75 of 76 tags, so a tag pin re-fetches whatever the tag
+      # points at today. Dependabot rewrites this SHA and its trailing comment.
+      - name: Trivy fs scan (Dockerfile + lockfiles)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"

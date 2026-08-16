@@ -17,7 +17,23 @@ RUN apt-get update && apt-get -y upgrade && \
 RUN groupadd -r -g 1000 mcp && useradd -r -u 1000 -g mcp -m -d /home/mcp -s /bin/bash mcp
 
 COPY --from=builder /wheels /wheels
-RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
+# Install the wheel, then drop pip from the runtime image. Nothing at runtime uses it:
+# the package and its dependencies are already installed by the line above.
+#
+# This is also the only fix for two recurring Trivy HIGHs. pip ships a vendored dependency
+# set (pip/_vendor/vendor.txt) that Trivy scans as real packages: msgpack 1.1.2
+# (GHSA-6v7p-g79w-8964) and setuptools 70.3.0 (CVE-2025-47273). Neither is an application
+# dependency, so no lockfile change can move them, and no pip release ships fixed versions.
+# Removing the unused component is the fix.
+#
+# Kept here in the TEMPLATE because this defect regenerates: it was removed from seven
+# runtime images by hand on 2026-08-16, and every server generated from this template
+# would have reintroduced it.
+RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels \
+    && python -m pip uninstall -y pip \
+    && rm -rf /usr/local/lib/python3.*/site-packages/pip \
+              /usr/local/lib/python3.*/site-packages/pip-*.dist-info \
+              /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.*
 
 USER mcp
 WORKDIR /home/mcp

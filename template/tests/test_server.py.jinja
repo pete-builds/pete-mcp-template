@@ -12,6 +12,9 @@ def _isolated_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MCP_TRANSPORT", "stdio")
     monkeypatch.setenv("MCP_LOG_FORMAT", "text")
     monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+    # pete-mcp-core fails closed: with no token and auth required (its default),
+    # building the server raises. These tests only import it, never serve it.
+    monkeypatch.setenv("MCP_AUTH_REQUIRED", "false")
 
 
 def test_server_module_loads() -> None:

@@ -53,3 +53,11 @@ updates:
   commit-message:
     prefix: deps
     include: scope
+  ignore:
+  # A base-image minor or major jump is a coordinated change (Dockerfile FROM
+  # tag, CI, locks), not a dependency bump. Dependabot reads 3.13 to 3.14 as a
+  # minor update and would open it. Digest refreshes and patch bumps still flow.
+  - dependency-name: python
+    update-types:
+    - version-update:semver-major
+    - version-update:semver-minor

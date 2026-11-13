@@ -6,9 +6,9 @@ file exists, no template artifacts survived rendering, all Python parses, the
 pyproject declares the metadata a publishable package needs, and the generated
 workflow is valid YAML.
 
-This deliberately stops short of installing the project. Installing is a
-stronger check and belongs in CI too, but it depends on pete-mcp-core being
-resolvable from PyPI, whereas everything here runs offline.
+This deliberately stops short of installing the project: everything here runs
+offline. Installing and testing the rendered project is the separate
+install-and-test job in .github/workflows/ci.yml.
 
 Usage:
     python scripts/validate_render.py /path/to/rendered/output

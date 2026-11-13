@@ -4,6 +4,8 @@
 
 Built on [pete-mcp-core](https://github.com/pete-builds/pete-mcp-core) — structured logging, healthcheck, transport wiring, and settings all come from the shared library.
 
+`pete-mcp-core` is not published to PyPI. `pyproject.toml` depends on it through a pinned commit tarball (`pete-mcp-core @ https://github.com/pete-builds/pete-mcp-core/archive/<sha>.tar.gz`), so `pip install` fetches it from GitHub and needs network access to github.com. Dependabot cannot see through that pin: to take a newer core, edit the SHA in `pyproject.toml` by hand.
+
 ## Install
 
 ```bash

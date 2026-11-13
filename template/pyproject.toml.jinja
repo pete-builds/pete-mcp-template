@@ -23,10 +23,14 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "fastmcp>=3.4.0",
+    "fastmcp>=4.1.6,<5",
     "httpx>=0.28.1",
     "python-dotenv>=1.1.0",
-    "pete-mcp-core{{ pete_mcp_core_version }}",
+    # Pinned to an immutable commit tarball: pete-mcp-core is not on PyPI and
+    # staying off it is the standing decision (mcp-unifi docs/decisions/0002).
+    # Dependabot cannot see through this pin, so bump the SHA by hand (it is
+    # `pete_mcp_core_sha` in the template's copier.yml) when the core moves.
+    "pete-mcp-core @ https://github.com/pete-builds/pete-mcp-core/archive/{{ pete_mcp_core_sha }}.tar.gz",
 ]
 
 [project.optional-dependencies]
@@ -45,6 +49,11 @@ dev = [
 Homepage = "https://github.com/{{ github_org }}/{{ repo_name }}"
 Repository = "https://github.com/{{ github_org }}/{{ repo_name }}"
 Issues = "https://github.com/{{ github_org }}/{{ repo_name }}/issues"
+
+[tool.hatch.metadata]
+# Required for the pete-mcp-core commit-tarball pin above: hatchling rejects
+# direct references otherwise.
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/{{ package_name }}"]

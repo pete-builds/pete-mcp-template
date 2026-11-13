@@ -81,7 +81,11 @@ python_min_version:
   default: "3.11"
   help: "Minimum Python version. CI matrix runs this version and newer."
 
-pete_mcp_core_version:
+pete_mcp_core_sha:
   type: str
-  default: ">=0.1.0"
-  help: "Version specifier for pete-mcp-core dependency."
+  default: "18f22618723b38493fb20039083c68f014cafb2e"
+  help: >-
+    Full commit SHA of pete-mcp-core to depend on. pete-mcp-core is not on
+    PyPI (mcp-unifi docs/decisions/0002), so generated projects pin an
+    immutable commit tarball, the same one every existing consumer pins.
+    Bump this one line when the consumers move.

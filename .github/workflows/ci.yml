@@ -28,10 +28,10 @@ jobs:
             transport: stdio
             python_min: "3.13"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
 
@@ -54,9 +54,57 @@ jobs:
       - name: Validate rendered output
         run: python scripts/validate_render.py /tmp/out
 
-  # TODO: a second job that installs the rendered project and runs its own
-  # pytest, ruff, and mypy. It cannot pass yet: the template defaults to
-  # `pete_mcp_core_version: ">=0.1.0"` and pete-mcp-core is not on PyPI, so
-  # `pip install -e ".[dev]"` in a freshly scaffolded project fails to resolve
-  # the dependency. Add it in the same change that confirms the publish, so this
-  # repo proves its output runs rather than only that it renders.
+  install-and-test:
+    # Proves the template's output works, not only that it renders: render with
+    # default answers, install the way the generated README says, then run the
+    # project's own lint, format, type check and tests. This is the check that
+    # would have caught `pete-mcp-core>=0.1.0` (not on PyPI) before it shipped.
+    name: Install and test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The generated project's floor (3.11) and the version it ships on (3.13).
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install copier
+        run: pip install copier
+
+      - name: Render with default answers
+        run: |
+          rendered="$(mktemp -d)/mcp-weather"
+          echo "RENDERED=$rendered" >> "$GITHUB_ENV"
+          copier copy --trust --defaults \
+            -d "project_name=MCP Weather" \
+            -d "description=Rendered by CI to prove the template installs." \
+            . "$rendered"
+
+      - name: Install as the generated README says
+        working-directory: ${{ env.RENDERED }}
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install -e ".[dev]"
+
+      - name: Ruff lint
+        working-directory: ${{ env.RENDERED }}
+        run: .venv/bin/ruff check .
+
+      - name: Ruff format check
+        working-directory: ${{ env.RENDERED }}
+        run: .venv/bin/ruff format --check .
+
+      - name: mypy strict
+        working-directory: ${{ env.RENDERED }}
+        run: .venv/bin/mypy
+
+      - name: pytest
+        working-directory: ${{ env.RENDERED }}
+        run: .venv/bin/pytest -v

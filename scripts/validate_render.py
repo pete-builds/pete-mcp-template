@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import ast
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -34,6 +35,10 @@ REQUIRED_FILES = [
     ".env.example",
     ".gitignore",
     ".github/workflows/ci.yml",
+    ".github/workflows/parity.yml",
+    "parity/golden.yaml",
+    "parity/expected.yaml",
+    "parity/parity.env",
     "src/{pkg}/__init__.py",
     "src/{pkg}/server.py",
     "src/{pkg}/settings.py",
@@ -141,24 +146,47 @@ def check_pyproject(root: Path) -> None:
 
 
 def check_workflow_yaml(root: Path) -> None:
-    path = root / ".github" / "workflows" / "ci.yml"
-    if not path.is_file():
-        return
     try:
         import yaml
     except ImportError:
         print("  (pyyaml unavailable, skipping workflow YAML check)")
         return
-    try:
-        doc = yaml.safe_load(path.read_text())
-    except yaml.YAMLError as exc:
-        fail(f"generated workflow is not valid YAML: {exc}")
+    for name in ("ci.yml", "parity.yml"):
+        path = root / ".github" / "workflows" / name
+        if not path.is_file():
+            continue
+        try:
+            doc = yaml.safe_load(path.read_text())
+        except yaml.YAMLError as exc:
+            fail(f"generated workflow {name} is not valid YAML: {exc}")
+            continue
+        jobs = doc.get("jobs") if isinstance(doc, dict) else None
+        if not jobs:
+            fail(f"generated workflow {name} declares no jobs")
+            continue
+        print(f"  generated workflow {name} jobs: {list(jobs)}")
+
+
+# The parity caller must pin the reusable workflow to a full commit SHA: copier
+# fills it from the template commit being rendered (_copier_conf.vcs_ref_hash).
+PARITY_USES = re.compile(
+    r"^\s*uses:\s*pete-builds/pete-mcp-template/\.github/workflows/mcp-parity\.yml@(\S+)\s*$",
+    re.MULTILINE,
+)
+
+
+def check_parity_pin(root: Path) -> None:
+    path = root / ".github" / "workflows" / "parity.yml"
+    if not path.is_file():
         return
-    jobs = doc.get("jobs") if isinstance(doc, dict) else None
-    if not jobs:
-        fail("generated workflow declares no jobs")
+    refs = PARITY_USES.findall(path.read_text())
+    if len(refs) != 1:
+        fail(f"parity.yml should call mcp-parity.yml exactly once, found {len(refs)}")
         return
-    print(f"  generated workflow jobs: {list(jobs)}")
+    if not re.fullmatch(r"[0-9a-f]{40}", refs[0]):
+        fail(f"parity.yml pins mcp-parity.yml to {refs[0]!r}, not a full commit SHA")
+        return
+    print(f"  parity workflow pinned to {refs[0]}")
 
 
 def main() -> int:
@@ -180,6 +208,7 @@ def main() -> int:
     check_python_parses(root)
     check_pyproject(root)
     check_workflow_yaml(root)
+    check_parity_pin(root)
 
     if _failures:
         print(f"\n{len(_failures)} problem(s) found.")

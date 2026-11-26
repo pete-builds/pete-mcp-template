@@ -1,0 +1,3 @@
+# Schema and transport parity only: mcp-searxng's answers depend on a live
+# upstream, so no golden calls until recorded upstream fixtures exist.
+calls: []

@@ -19,6 +19,8 @@ A ready-to-run repo with:
 - `docker-compose.yml` — one-liner local run.
 - `.github/workflows/ci.yml`: matrix over the Python versions you allow, with
   every action pinned by full commit SHA.
+- `.github/workflows/parity.yml` and `parity/`: the release parity check,
+  described below.
 - `.github/dependabot.yml`: pip, Actions and Docker updates; the Docker block
   ignores Python minor and major moves so the image stays on 3.13.
 - `README.md`, `LICENSE`, `SECURITY.md`, `CONTRIBUTING.md`, `.env.example`
@@ -58,6 +60,86 @@ The commit is the `pete_mcp_core_sha` question in `copier.yml` (default
 `18f2261...`, the commit all five consumers pin). To move every newly generated
 project to a newer core, change that one line. Dependabot cannot see through a
 tarball pin, so existing projects bump their own SHA by hand.
+
+## Release parity check
+
+Every generated server ships `.github/workflows/parity.yml`, which calls
+`.github/workflows/mcp-parity.yml` in this repo, pinned to the template commit
+the server was generated from (`copier update` moves the pin).
+
+**What it proves.** On every pull request, and before a release when the
+release workflow calls it, CI starts two containers: the newest `X.Y.Z` release
+of the server from GHCR and a candidate built from the change. A third
+container talks to both over a docker network, the way a LAN client does. It
+compares the tool list, each tool's title, full description, input and output
+schema and annotations, and the answers to the read-only golden calls in
+`parity/golden.yaml`. Any difference fails the check. This catches what a green
+test suite and a green healthcheck both miss: a renamed tool parameter, a
+description the framework truncated, a server that only listens on `127.0.0.1`
+inside its container, and, for any tool with a golden call that passes the
+argument, an argument the server now accepts and ignores. The starter golden
+file ships one such call for the sample `hello` tool; replace it with calls for
+your own tools.
+The job always ends with one line starting `parity:`; a first release with no
+image yet says `parity: no baseline image, first release, skipped`.
+
+**What it does not prove.** It replays a fixed golden set, not live traffic.
+Both containers run on the dummy values in `parity/parity.env`, so a server
+whose answers depend on a live web service (search, weather, a vendor API)
+gets schema and transport parity only, until recorded upstream fixtures exist.
+It says nothing about tools the golden set never calls, or about load,
+memory or timing.
+
+**Guard rails.** The env file reaches both containers, so it may not set
+`MCP_HOST`, `MCP_PORT` or `MCP_TRANSPORT` (or their `FASTMCP_` forms): that
+would hide a change in where the server listens. The one exception is
+`MCP_TRANSPORT=streamable-http` for a server whose released image defaults to
+stdio, which the template writes itself. The summary lists the env file's
+variable names (never values); a name that is not plain
+`[A-Za-z_][A-Za-z0-9_]*` is refused, and a byte order mark is dropped first, as
+docker does.
+
+**Normalization contract.** Volatile fields are normalized by key name only:
+`normalize: keys: [...]` in `parity/golden.yaml`, globally or per call.
+Regex patterns are not supported; a golden file that still has `patterns` is an
+error, never silently ignored. A key hides the field it names by design, so
+every difference a key hides is always listed in the summary under "hidden by
+normalization", with the path and both raw values. Read that list: a key that
+names the field that regressed hides the regression, and the list is where it
+shows. Keys that hold a whole answer (`content`, `text`, `result`, ...) are
+refused, and as a backstop every golden call's baseline answer must keep at
+least one non-empty text or number that no key touched, or the run is an error.
+Zero tools on either side is an error, not a pass, and a golden call that
+errors on the released image is flagged, since it proves nothing.
+
+**Declaring an intended change.** When a change is meant to alter what clients
+see, the failing run's summary lists each difference by path, for example
+`tools.hello.inputSchema.properties.who`. Add an entry to
+`parity/expected.yaml`:
+
+```yaml
+changes:
+  - change: tools.hello.inputSchema.properties
+    baseline: 0.3.0
+    reason: Renamed the hello tool's argument from name to who, to match the other tools.
+```
+
+An entry must name at least one tool or call (`tools.<name>` or `calls.<id>`).
+It covers its path and everything under it, compared segment by segment, and
+applies only while the baseline is the release it names, so it stops applying after the next release
+and cannot hide a later change. Reviewers read this file instead of the diff.
+
+**How the pinned client is found.** A reusable workflow's `github` context
+describes the caller, so it cannot tell which commit of itself is running.
+`mcp-parity.yml` reads `job.workflow_repository` and `job.workflow_sha`, which
+name the workflow that defines the job, checks out `parity/` at exactly that
+commit, and confirms `HEAD` before running anything. It refuses to run if they
+are empty, rather than falling back to `main`.
+
+The template's own CI proves the check can fail: `parity-controls` renders a
+sample server and runs parity against itself (must pass) and against mutants
+that must each fail, and `parity-e2e` runs the reusable workflow against a real
+GHCR release.
 
 ## Updating a generated project
 

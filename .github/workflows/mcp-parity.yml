@@ -1,0 +1,210 @@
+name: MCP release parity
+
+# Reusable workflow: compares a server's last released image on GHCR with a
+# candidate built from the caller's checkout. Callers pin it by commit SHA:
+#
+#   uses: pete-builds/pete-mcp-template/.github/workflows/mcp-parity.yml@<sha>
+#
+# The parity client (parity/parity.py and its pinned requirements) is checked
+# out from the SAME commit as this file, read from job.workflow_repository and
+# job.workflow_sha, which name the workflow that defines this job, not the
+# caller. Checking out @main here would let an unreviewed client judge a pinned
+# workflow.
+#
+# The job always ends with exactly one verdict line beginning "parity:".
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: GHCR image without a tag, e.g. ghcr.io/pete-builds/mcp-weather
+        required: true
+        type: string
+      port:
+        description: Container port the server listens on for streamable-http
+        required: true
+        type: number
+      mcp-path:
+        description: MCP endpoint path
+        type: string
+        default: /mcp
+      golden:
+        description: Golden file in the caller repo
+        type: string
+        default: parity/golden.yaml
+      expected:
+        description: Declared intended differences in the caller repo
+        type: string
+        default: parity/expected.yaml
+      env-file:
+        description: Dummy env file in the caller repo, given to both containers and the client
+        type: string
+        default: ""
+      context:
+        description: Docker build context for the candidate, relative to the caller repo
+        type: string
+        default: .
+      dockerfile:
+        description: Dockerfile for the candidate, relative to the caller repo
+        type: string
+        default: Dockerfile
+      release-version:
+        description: When gating a release, the version being released; the baseline is the highest release below it
+        type: string
+        default: ""
+      wait-seconds:
+        description: How long to wait for each server to answer the MCP handshake
+        type: number
+        default: 60
+    outputs:
+      verdict:
+        description: The final parity line
+        value: ${{ jobs.parity.outputs.verdict }}
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  parity:
+    name: Release parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      verdict: ${{ steps.final.outputs.verdict }}
+    steps:
+      - name: Check out the server under test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: caller
+          persist-credentials: false
+          # Release tags are needed to tell "first release" from "image unreadable".
+          fetch-tags: true
+
+      - name: Identify this workflow's own commit
+        id: self
+        env:
+          WF_REPO: ${{ job.workflow_repository }}
+          WF_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          echo "parity tooling: repository=${WF_REPO:-<empty>} sha=${WF_SHA:-<empty>}"
+          if [ -z "$WF_REPO" ] || ! printf '%s' "$WF_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::job.workflow_repository/job.workflow_sha are not set; refusing to guess which parity client to run"
+            exit 1
+          fi
+          if [ "$WF_REPO" != "pete-builds/pete-mcp-template" ]; then
+            echo "::error::parity tooling must come from pete-builds/pete-mcp-template, not $WF_REPO"
+            exit 1
+          fi
+          echo "repo=$WF_REPO" >> "$GITHUB_OUTPUT"
+          echo "sha=$WF_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the parity client at that commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.self.outputs.repo }}
+          ref: ${{ steps.self.outputs.sha }}
+          path: parity-tool
+          persist-credentials: false
+          sparse-checkout: parity
+
+      - name: Confirm the client commit
+        env:
+          WANT: ${{ steps.self.outputs.sha }}
+        run: |
+          set -euo pipefail
+          got="$(git -C parity-tool rev-parse HEAD)"
+          echo "parity client checked out at $got"
+          if [ "$got" != "$WANT" ]; then
+            echo "::error::parity client is at $got, expected $WANT"
+            exit 1
+          fi
+
+      - name: Resolve the baseline release on GHCR
+        id: baseline
+        env:
+          IMAGE: ${{ inputs.image }}
+          RELEASE_VERSION: ${{ inputs.release-version }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/parity"
+          git -C caller tag -l > "$RUNNER_TEMP/parity/git-tags.txt"
+          echo "release tags in this repo: $(grep -Ec '^v?[0-9]+\.[0-9]+\.[0-9]+$' "$RUNNER_TEMP/parity/git-tags.txt" || true)"
+          rc=0
+          python3 parity-tool/parity/parity.py baseline \
+            --image "$IMAGE" \
+            --release-version "$RELEASE_VERSION" \
+            --git-tags-file "$RUNNER_TEMP/parity/git-tags.txt" > "$RUNNER_TEMP/parity/baseline.log" || rc=$?
+          cat "$RUNNER_TEMP/parity/baseline.log"
+          if [ "$rc" -ne 0 ]; then
+            grep '^parity: ERROR' "$RUNNER_TEMP/parity/baseline.log" | tail -1 > "$RUNNER_TEMP/parity/verdict.txt" || true
+            exit "$rc"
+          fi
+
+      - name: First release, nothing to compare
+        if: steps.baseline.outputs.state == 'first-release'
+        run: |
+          echo "parity: no baseline image, first release, skipped" | tee "$RUNNER_TEMP/parity/verdict.txt"
+
+      - name: Build the candidate image
+        if: steps.baseline.outputs.state == 'compare'
+        env:
+          CONTEXT: caller/${{ inputs.context }}
+          DOCKERFILE: caller/${{ inputs.dockerfile }}
+        run: docker build --pull -t parity-candidate:local -f "$DOCKERFILE" "$CONTEXT"
+
+      - name: Pull the baseline image
+        if: steps.baseline.outputs.state == 'compare'
+        env:
+          IMAGE: ${{ inputs.image }}
+          TAG: ${{ steps.baseline.outputs.tag }}
+          GHCR_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          # A public image pulls anonymously; a private one needs the login.
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin \
+            || echo "::warning::docker login to ghcr.io failed; trying an anonymous pull"
+          docker pull "$IMAGE:$TAG"
+          docker logout ghcr.io || true
+
+      - name: Build the parity client
+        if: steps.baseline.outputs.state == 'compare'
+        run: docker build --pull -t parity-client:local parity-tool/parity
+
+      - name: Compare baseline and candidate over the docker network
+        if: steps.baseline.outputs.state == 'compare'
+        env:
+          PARITY_BASELINE_IMAGE: ${{ inputs.image }}:${{ steps.baseline.outputs.tag }}
+          PARITY_BASELINE_LABEL: ${{ steps.baseline.outputs.tag }}
+          PARITY_CANDIDATE_IMAGE: parity-candidate:local
+          PARITY_CLIENT_IMAGE: parity-client:local
+          PARITY_PORT: ${{ inputs.port }}
+          PARITY_MCP_PATH: ${{ inputs.mcp-path }}
+          PARITY_GOLDEN: caller/${{ inputs.golden }}
+          PARITY_EXPECTED: caller/${{ inputs.expected }}
+          PARITY_ENV_FILE_INPUT: ${{ inputs.env-file }}
+          PARITY_WAIT: ${{ inputs.wait-seconds }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PARITY_ENV_FILE_INPUT" ]; then
+            export PARITY_ENV_FILE="caller/$PARITY_ENV_FILE_INPUT"
+            export PARITY_ENV_FILE_LABEL="$PARITY_ENV_FILE_INPUT"
+          fi
+          export PARITY_OUT="$RUNNER_TEMP/parity"
+          bash parity-tool/parity/run.sh
+
+      - name: Verdict
+        id: final
+        if: always()
+        run: |
+          if [ -f parity-tool/parity/verdict.sh ]; then
+            bash parity-tool/parity/verdict.sh "$RUNNER_TEMP/parity/verdict.txt"
+          else
+            line="parity: ERROR the parity client was never checked out (see the failed step above)"
+            echo "verdict=$line" >> "$GITHUB_OUTPUT"
+            echo "$line"
+            exit 1
+          fi

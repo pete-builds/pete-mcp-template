@@ -20,3 +20,23 @@ updates:
       update-types:
       - minor
       - patch
+- package-ecosystem: docker
+  # The parity client's python base image, pinned by digest.
+  directory: "/parity"
+  schedule:
+    interval: weekly
+    day: tuesday
+    time: '09:30'
+    timezone: America/New_York
+  open-pull-requests-limit: 1
+  labels:
+  - dependencies
+  - docker
+  commit-message:
+    prefix: ci
+    include: scope
+  ignore:
+  - dependency-name: python
+    update-types:
+    - version-update:semver-major
+    - version-update:semver-minor

@@ -1,0 +1,23 @@
+# Intended differences from the last release, for the release parity check.
+#
+# When this change is MEANT to alter what a client sees (a new tool, a reworded
+# description, a renamed argument, a different answer to a golden call), the
+# parity check fails and its summary lists each difference by path. Copy the
+# path here with the release it differs from and one plain-English sentence on
+# why. A reviewer reads this file instead of the diff.
+#
+# An entry must name at least one tool or call (tools.<name> or calls.<id>);
+# a bare "tools" or "calls" is refused. It covers its path and everything under
+# it. A tool name containing a dot is written quoted: tools."a.b".description.
+# An entry only applies while the baseline is the release it names, so after
+# the next release it stops applying on its own and can be deleted.
+#
+# changes:
+#   - change: tools.hello.inputSchema.properties
+#     baseline: 0.3.0
+#     reason: Renamed the hello tool's argument from name to who, to match the other tools.
+#   - change: tools.forecast
+#     baseline: 0.3.0
+#     reason: New forecast tool.
+
+changes: []

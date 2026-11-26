@@ -1,0 +1,12 @@
+# Normalizes the sample tool's own answer key, which would erase the whole
+# answer. The run-time property check must turn this into an ERROR, even on the
+# dropped-argument mutant that a plain diff would catch.
+calls:
+  - id: hello-named
+    tool: hello
+    arguments:
+      name: parity
+    read_only: true
+
+normalize:
+  keys: [greeting]

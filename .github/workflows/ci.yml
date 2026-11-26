@@ -108,3 +108,125 @@ jobs:
       - name: pytest
         working-directory: ${{ env.RENDERED }}
         run: .venv/bin/pytest -v
+
+  parity-unit:
+    # The parity client's own tests: GHCR tag paging, baseline choice, the
+    # golden and expected file rules, the diff and the verdict.
+    name: Parity unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Install the pinned client and test tools
+        run: |
+          pip install --require-hashes -r parity/requirements.txt
+          pip install pytest==9.2.0 ruff==0.17.6
+
+      - name: Ruff
+        run: |
+          ruff check parity
+          ruff format --check parity
+
+      - name: Shellcheck
+        run: shellcheck parity/*.sh parity/selftest/*.sh
+
+      - name: Final verdict step (PASS and skip exit 0, all else non-zero)
+        run: bash parity/selftest/verdict-test.sh
+
+      - name: pytest
+        run: python -m pytest -v -p no:cacheprovider parity
+
+  parity-controls:
+    # Proves the parity check can fail. Renders the template into a sample
+    # server, builds it as the "release", and runs parity against itself (must
+    # pass) and against mutants that must each fail: a renamed parameter, a
+    # truncated description, a loopback-only bind, and an argument that is
+    # accepted then ignored. A declared change must pass. Each plant is
+    # grepped before its result is trusted.
+    name: Parity mutation controls
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Install copier
+        run: pip install copier
+
+      - name: Render a sample server
+        run: |
+          copier copy --trust --defaults \
+            -d "project_name=MCP Parity Sample" \
+            -d "description=Rendered by CI for the parity controls." \
+            . "$RUNNER_TEMP/sample"
+
+      - name: Build the parity client
+        run: docker build -t parity-client:ci parity
+
+      - name: Run the controls
+        run: bash parity/selftest/selftest.sh "$RUNNER_TEMP/sample" parity-client:ci "$RUNNER_TEMP/parity-selftest"
+
+  parity-pin-control:
+    # The rendered parity.yml must pin the reusable workflow to the template
+    # commit it was rendered from. Rendering from a copy with no git history
+    # leaves no commit to pin, and the validator must refuse that output.
+    name: Parity pin control
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Install copier
+        run: pip install copier pyyaml
+
+      - name: Render from a copy with no git history; validation must fail
+        run: |
+          nogit="$RUNNER_TEMP/nogit"
+          mkdir -p "$nogit"
+          cp -R copier.yml template "$nogit/"
+          copier copy --trust --defaults -d "project_name=MCP Weather" -d "description=x" \
+            "$nogit" "$RUNNER_TEMP/unpinned"
+          grep -n 'mcp-parity.yml@' "$RUNNER_TEMP/unpinned/.github/workflows/parity.yml"
+          rc=0
+          out="$(python scripts/validate_render.py "$RUNNER_TEMP/unpinned" 2>&1)" || rc=$?
+          # Print the validator's verdict without its ::error:: prefix, so the
+          # expected rejection does not show up as an annotation on the run.
+          printf '%s\n' "$out" | sed 's/^::error::/validator: /'
+          if [ "$rc" -eq 0 ]; then
+            echo "control: FAIL (an unpinned parity.yml passed validation)"
+            exit 1
+          fi
+          echo "control: PASS (validator rejected the unpinned render, exit $rc)"
+
+  parity-e2e:
+    # The reusable workflow end to end, as a generated server would call it:
+    # pinned checkout of the client via job.workflow_sha, GHCR baseline
+    # resolution, three containers on one network. The candidate is mcp-searxng
+    # 0.6.0 pinned by digest, and release-version 0.6.1 keeps the baseline at
+    # 0.6.0, so a later searxng release cannot turn this repo red.
+    name: Parity end to end
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/mcp-parity.yml
+    with:
+      image: ghcr.io/pete-builds/mcp-searxng
+      port: 3702
+      context: parity/selftest/e2e
+      dockerfile: parity/selftest/e2e/Dockerfile
+      env-file: parity/selftest/e2e/parity.env
+      golden: parity/selftest/e2e/golden.yaml
+      expected: parity/selftest/e2e/expected.yaml
+      release-version: 0.6.1

@@ -1,0 +1,45 @@
+# Golden set for the release parity check (.github/workflows/parity.yml).
+#
+# Every run compares tools/list between the last release and this change:
+# each tool's name, title, full description, input schema, output schema and
+# annotations. That needs nothing in this file.
+#
+# Golden calls add behavior: each one is sent to both servers and the answers
+# are diffed. This is what catches an argument the server accepts and then
+# ignores, so give every tool at least one call that passes its arguments.
+#
+# Choosing calls:
+#   - READ-ONLY only. The call runs against the released image and the
+#     candidate; never list one that creates, changes or deletes anything.
+#     Each call must say read_only: true.
+#   - No live upstream. Both containers run on the dummy values in
+#     parity.env, so a call that needs a real API key or a reachable service
+#     fails on both sides and proves nothing (the summary warns when a call
+#     errors on the released image).
+#   - Deterministic. If an answer carries a timestamp or an id that changes
+#     every run, name it under normalize below.
+#
+# The call below exercises the sample hello tool. When you replace hello,
+# replace this call with one for your own tool.
+
+calls:
+  - id: hello-named # stable name; differences are reported as calls.<id>...
+    tool: hello
+    arguments:
+      name: parity
+    read_only: true
+
+# Volatile fields, by KEY NAME only: the value of every key listed here is
+# blanked to "<normalized>", at any depth, in every call answer before the diff
+# (JSON inside text answers is parsed first, so nested keys can be named). A
+# call can add its own under normalize: keys: [...]. Regex patterns are not
+# supported; a golden file that has patterns is an error.
+#
+# A key hides that field by design. Every difference a key hides is still
+# listed in the run summary under "hidden by normalization", with both values,
+# so name only fields that change on every run (timestamps, request ids), never
+# a field whose value is the answer. Keys that hold a whole answer (content,
+# text, result, ...) are refused, and each call's answer must keep at least one
+# text or number that no key touches, or the run is an error.
+normalize:
+  keys: [] # e.g. [generated_at, request_id]

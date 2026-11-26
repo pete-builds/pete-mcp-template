@@ -13,6 +13,8 @@
 #   declared    renamed, declared in expected     must PASS, listing the declaration
 #   envmask     loopback, with MCP_HOST=0.0.0.0   must ERROR: the env file may not
 #               in the env file to hide it        choose where the server listens
+#   erased      dropped, golden normalizes the    must ERROR: normalization may not
+#               answer key `greeting`             leave nothing to compare
 #
 # Usage: selftest.sh <rendered-server-dir> <parity-client-image> <work-dir>
 
@@ -92,10 +94,10 @@ printf 'MCP_AUTH_TOKEN=parity-selftest-dummy\nMCP_HOST=0.0.0.0\n' > "$masking_en
 results=()
 failed=0
 
-# check <case> <candidate tag> <expected file> <want exit> <want verdict prefix> [<must also contain>] [<env file>]
+# check <case> <candidate tag> <expected file> <want exit> <want verdict prefix> [<must also contain>] [<env file>] [<golden file>]
 check() {
   local name="$1" candidate="$2" expected="$3" want_rc="$4" want_prefix="$5" also="${6:-}"
-  local case_env="${7:-$env_file}"
+  local case_env="${7:-$env_file}" case_golden="${8:-$here/golden.yaml}"
   local out="$work/out-$name"
   rm -rf "$out"
   echo "::group::case $name (candidate parity-selftest:$candidate)"
@@ -105,7 +107,7 @@ check() {
     PARITY_BASELINE_LABEL=0.1.0 \
     PARITY_CLIENT_IMAGE="$client_image" \
     PARITY_PORT="$port" \
-    PARITY_GOLDEN="$here/golden.yaml" \
+    PARITY_GOLDEN="$case_golden" \
     PARITY_EXPECTED="$expected" \
     PARITY_ENV_FILE="$case_env" \
     PARITY_WAIT=30 \
@@ -142,6 +144,9 @@ check declared renamed "$here/expected-renamed.yaml" 0 "parity: PASS" \
   "Renamed the hello tool's argument from name to who"
 check envmask loopback "$none" 2 "parity: ERROR the env file sets MCP_HOST" \
   "" "$masking_env_file"
+check erased dropped "$none" 2 \
+  "parity: ERROR golden call hello-named: normalization leaves nothing to compare" \
+  "" "" "$here/golden-erasing.yaml"
 
 echo
 echo "parity self-test results:"

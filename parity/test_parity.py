@@ -495,7 +495,10 @@ def test_normalize_settings_are_printed_in_the_summary() -> None:
 
 
 def test_golden_call_erroring_on_baseline_warns() -> None:
-    calls = {"bad": {"isError": True, "content": []}, "ok": {"isError": False}}
+    calls = {
+        "bad": {"isError": True, "content": [{"type": "text", "text": "unknown city"}]},
+        "ok": {"isError": False, "content": [{"type": "text", "text": "sunny"}]},
+    }
     v = parity.judge(snap({"hello": HELLO}, calls), snap({"hello": HELLO}, calls), [], "0.1.0")
     assert v.code == parity.EXIT_PASS
     assert len(v.warnings) == 1 and "`bad`" in v.warnings[0]
@@ -519,3 +522,118 @@ def test_covers_matches_segments_not_text() -> None:
 def test_path_round_trip() -> None:
     for segs in [("tools", "a"), ("tools", "a.b", "description"), ("calls", 'q"x', "0")]:
         assert parity.parse_path(parity.format_path(segs)) == segs
+
+
+# --- round two: env names, normalization property ---------------------------
+
+
+def test_bom_cannot_hide_mcp_host_on_line_one(tmp_path: Path) -> None:
+    env = tmp_path / "parity.env"
+    env.write_bytes(b"\xef\xbb\xbfMCP_HOST=0.0.0.0\nMCP_AUTH_TOKEN=x\n")
+    image = write(tmp_path, "img.json", json.dumps(["MCP_TRANSPORT=streamable-http"]))
+    summary = tmp_path / "env.md"
+    args = ["check-env", "--env-file", str(env), "--baseline-image-env", str(image)]
+    code = parity.main([*args, "--summary", str(summary)])
+    assert code == parity.EXIT_ERROR
+    # Refused as MCP_HOST itself (the BOM was dropped on read), not as an odd name.
+    assert "sets MCP_HOST" in summary.read_text()
+
+
+@pytest.mark.parametrize(
+    "line", ["﻿FOO=1", "BAD-NAME=1", "1ABC=1", "MCP​HOST=0.0.0.0", "NAME WITH SPACE=1"]
+)
+def test_env_names_must_be_plain(line: str) -> None:
+    with pytest.raises(parity.ConfigError, match="not plain ASCII"):
+        parity.check_env(line + "\n", {})
+
+
+def greeting_snap(text: str = "hello, parity", extra: dict[str, object] | None = None):
+    payload = {"greeting": text, **(extra or {})}
+    record = {
+        "isError": False,
+        "content": [{"type": "text", "text": dict(payload)}],
+        "structuredContent": {"result": dict(payload)},
+    }
+    return snap({"hello": HELLO}, {"hello-named": record})
+
+
+def golden_with(keys=(), patterns=(), call_keys=(), call_patterns=()) -> parity.Golden:
+    call = parity.GoldenCall(
+        "hello-named", "hello", {"name": "parity"}, list(call_keys), list(call_patterns)
+    )
+    return parity.Golden(list(keys), list(patterns), [call])
+
+
+@pytest.mark.parametrize(
+    "golden",
+    [
+        golden_with(patterns=[r"[\s\S]+"]),
+        golden_with(patterns=[r".+"]),
+        golden_with(patterns=[r"^.+$"]),
+        golden_with(patterns=[r"\w+"]),
+        golden_with(keys=["greeting"]),
+        golden_with(call_keys=["greeting"]),
+        golden_with(call_patterns=[r"[\s\S]+"]),
+    ],
+)
+def test_normalization_that_erases_the_answer_is_an_error(golden: parity.Golden) -> None:
+    # The dropped-argument regression: baseline says hello, parity; candidate
+    # ignores the argument. Erasing normalization must not turn this into a PASS.
+    v = parity.judge(greeting_snap(), greeting_snap("hello, world"), [], "0.1.0", golden)
+    assert v.code == parity.EXIT_ERROR
+    assert v.line == (
+        "parity: ERROR golden call hello-named: normalization leaves nothing to compare"
+    )
+
+
+def test_narrow_normalization_of_a_timestamp_still_passes() -> None:
+    base = greeting_snap(extra={"generated_at": "2026-11-26T10:00:00Z"})
+    cand = greeting_snap(extra={"generated_at": "2026-11-26T10:05:00Z"})
+    v = parity.judge(base, cand, [], "0.1.0", golden_with(keys=["generated_at"]))
+    assert v.code == parity.EXIT_PASS, v.summary
+    pattern = golden_with(patterns=[r"\d{4}-\d{2}-\d{2}T[0-9:]+Z"])
+    assert parity.judge(base, cand, [], "0.1.0", pattern).code == parity.EXIT_PASS
+
+
+def test_narrow_normalization_still_catches_a_dropped_argument() -> None:
+    base = greeting_snap(extra={"generated_at": "2026-11-26T10:00:00Z"})
+    cand = greeting_snap("hello, world", extra={"generated_at": "2026-11-26T10:05:00Z"})
+    v = parity.judge(base, cand, [], "0.1.0", golden_with(keys=["generated_at"]))
+    assert v.code == parity.EXIT_FAIL
+    assert "calls.hello-named.content.0.text.greeting" in v.summary
+
+
+def test_scaffolding_alone_is_not_content() -> None:
+    # type: text and isError: false survive every normalization; they must not
+    # count as something left to compare.
+    rec = {"isError": False, "content": [{"type": "text", "text": ""}]}
+    assert parity.surviving_leaves(rec, rec) == 0
+    assert parity.surviving_leaves({"n": 3}, {"n": 3}) == 1
+    assert parity.surviving_leaves({"n": 3}, {"n": "<normalized>"}) == 0
+
+
+def test_tool_list_gets_the_same_property_check() -> None:
+    blank = {"name": "", "description": "", "inputSchema": {"type": "object"}}
+    v = parity.judge(snap({"x": blank}), snap({"x": blank}), [], "0.1.0")
+    assert v.code == parity.EXIT_ERROR
+    assert v.line.startswith("parity: ERROR tool x: normalization leaves nothing to compare")
+
+
+def test_per_call_empty_matching_pattern_is_refused(tmp_path: Path) -> None:
+    text = (
+        "calls:\n"
+        "  - id: a\n    tool: hello\n    read_only: true\n"
+        "    normalize:\n      patterns: ['.*']\n"
+    )
+    with pytest.raises(parity.ConfigError, match="empty string"):
+        parity.load_golden(write(tmp_path, "g.yaml", text))
+
+
+def test_per_call_whole_answer_key_is_refused(tmp_path: Path) -> None:
+    text = (
+        "calls:\n"
+        "  - id: a\n    tool: hello\n    read_only: true\n"
+        "    normalize:\n      keys: [text]\n"
+    )
+    with pytest.raises(parity.ConfigError, match="whole answer"):
+        parity.load_golden(write(tmp_path, "g.yaml", text))

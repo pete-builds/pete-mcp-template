@@ -33,6 +33,9 @@ calls:
 # diff. JSON inside text answers is parsed first, so nested keys can be named.
 # A pattern that matches the empty string is refused, and so are keys that hold
 # a whole answer (content, text, result, ...): name the volatile field itself.
+# Each call's answer must keep at least one text or number that normalization
+# leaves untouched, or the run is an error: hide the volatile field, not the
+# answer.
 normalize:
   keys: [] # e.g. [generated_at, request_id]
   patterns: [] # regexes, e.g. ['\d{4}-\d{2}-\d{2}T[0-9:.]+(Z|[+-]\d{2}:\d{2})?']

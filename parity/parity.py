@@ -599,6 +599,52 @@ def call_record(dumped: dict[str, Any]) -> dict[str, Any]:
     return {k: dumped[k] for k in CALL_FIELDS if k in dumped}
 
 
+# Protocol scaffolding present in every answer; it never counts as content.
+SCAFFOLD_KEYS = {"isError", "type", "mimeType", "annotations", "_meta"}
+
+
+def surviving_leaves(raw: Any, norm: Any) -> int:
+    """Count content leaves normalization left untouched.
+
+    A leaf counts when it is a non-empty string, or a number, that is identical
+    before and after normalization. Booleans and protocol scaffolding (``type``,
+    ``isError`` and the like) are present in every answer and never count.
+    """
+    if isinstance(raw, dict):
+        if not isinstance(norm, dict):
+            return 0
+        return sum(
+            surviving_leaves(v, norm.get(k))
+            for k, v in raw.items()
+            if k not in SCAFFOLD_KEYS and k in norm
+        )
+    if isinstance(raw, list):
+        if not isinstance(norm, list) or len(norm) != len(raw):
+            return 0
+        return sum(surviving_leaves(a, b) for a, b in zip(raw, norm, strict=True))
+    if isinstance(raw, bool):
+        return 0
+    if isinstance(raw, str):
+        return 1 if raw.strip() and norm == raw else 0
+    if isinstance(raw, int | float):
+        return 1 if type(norm) is type(raw) and norm == raw else 0
+    return 0
+
+
+def normalize_calls(calls: dict[str, Any], golden: Golden | None) -> dict[str, Any]:
+    """Apply the golden file's global and per-call normalization to each answer."""
+    if golden is None:
+        return dict(calls)
+    by_id = {c.id: c for c in golden.calls}
+    out: dict[str, Any] = {}
+    for cid, record in calls.items():
+        call = by_id.get(cid)
+        keys = set(golden.keys) | set(call.keys if call else [])
+        pats = [re.compile(p) for p in golden.patterns + (call.patterns if call else [])]
+        out[cid] = normalize(record, keys, pats)
+    return out
+
+
 def call_errored(record: Any) -> bool:
     return isinstance(record, dict) and (record.get("isError") is True or "protocolError" in record)
 
@@ -678,6 +724,32 @@ def judge(
             "\n".join(lines) + "\n",
         )
 
+    base_calls = normalize_calls(base["calls"], golden)
+    cand_calls = normalize_calls(cand["calls"], golden)
+    erased = [
+        f"golden call {cid}"
+        for cid in sorted(base["calls"])
+        if surviving_leaves(base["calls"][cid], base_calls[cid]) == 0
+    ] + [
+        f"tool {name}"
+        for name in sorted(base["tools"])
+        if surviving_leaves(base["tools"][name], base["tools"][name]) == 0
+    ]
+    if erased:
+        lines += [
+            f"- **{what}**: after normalization the baseline's answer has no non-empty "
+            "text or number left that normalization did not touch, so any change to it "
+            "would pass."
+            for what in erased
+        ]
+        lines += ["", *normalize_lines(golden)]
+        more = f" (and {len(erased) - 1} more)" if len(erased) > 1 else ""
+        return Verdict(
+            EXIT_ERROR,
+            f"parity: ERROR {erased[0]}: normalization leaves nothing to compare{more}",
+            "\n".join(lines) + "\n",
+        )
+
     warnings = [
         f"golden call `{cid}` returned an error on the baseline {baseline_label}, so it "
         "proves nothing about behavior; fix its arguments or remove it"
@@ -690,7 +762,7 @@ def judge(
     lines += normalize_lines(golden)
 
     diffs = deep_diff(base["tools"], cand["tools"], ("tools",)) + deep_diff(
-        base["calls"], cand["calls"], ("calls",)
+        base_calls, cand_calls, ("calls",)
     )
     active = [e for e in expected if parse_semver(e.baseline) == parse_semver(baseline_label)]
     stale = [e for e in expected if e not in active]
@@ -819,9 +891,9 @@ async def _collect_once(
                     record: Any = call_record(dumped)
                 except Exception as exc:  # a protocol error is a result worth diffing
                     record = {"protocolError": str(exc)}
-                keys = set(golden.keys) | set(call.keys)
-                pats = [re.compile(p) for p in golden.patterns + call.patterns]
-                calls[call.id] = normalize(decode_json_strings(record), keys, pats)
+                # Stored raw; judge() normalizes, so it can also check that the
+                # normalization left something to compare.
+                calls[call.id] = decode_json_strings(record)
     return {"reachable": True, "tools": tools, "calls": calls}
 
 
@@ -936,6 +1008,9 @@ def image_env(doc: Any) -> dict[str, str]:
     return env
 
 
+ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
 def check_env(text: str, baseline_image_env: dict[str, str]) -> list[str]:
     """Refuse listen settings in the env file; return the variable names it sets.
 
@@ -945,6 +1020,13 @@ def check_env(text: str, baseline_image_env: dict[str, str]) -> list[str]:
     """
     names: list[str] = []
     for name, value in parse_env_file(text):
+        if not ENV_NAME.match(name):
+            # Docker strips a leading BOM and may read a name differently from us;
+            # a name we cannot read plainly is refused, never waved through.
+            raise ConfigError(
+                f"the env file has a variable name that is not plain ASCII "
+                f"[A-Za-z_][A-Za-z0-9_]*: {name!r}"
+            )
         names.append(name)
         upper = name.upper()
         if upper not in REFUSED_ENV:
@@ -969,7 +1051,9 @@ def cmd_check_env(args: argparse.Namespace) -> int:
     shown = args.env_file_label or args.env_file or "none"
     try:
         base_env = image_env(json.loads(Path(args.baseline_image_env).read_text()))
-        text = Path(args.env_file).read_text() if args.env_file else ""
+        # utf-8-sig drops a byte order mark, as docker's env-file parser does, so a
+        # BOM cannot hide MCP_HOST on the first line.
+        text = Path(args.env_file).read_text(encoding="utf-8-sig") if args.env_file else ""
         names = check_env(text, base_env)
     except (ConfigError, OSError, ValueError) as exc:
         summary.write_text(f"Env file `{shown}`: refused. {exc}\n\n")

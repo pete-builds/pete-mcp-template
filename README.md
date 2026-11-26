@@ -95,8 +95,13 @@ memory or timing.
 would hide a change in where the server listens. The one exception is
 `MCP_TRANSPORT=streamable-http` for a server whose released image defaults to
 stdio, which the template writes itself. The summary lists the env file's
-variable names (never values) and every normalize key and pattern. A pattern
-that matches the empty string is refused, as are keys that hold a whole answer.
+variable names (never values) and every normalize key and pattern; a name that
+is not plain `[A-Za-z_][A-Za-z0-9_]*` is refused, and a byte order mark is
+dropped first, as docker does. A pattern that matches the empty string is
+refused, as are keys that hold a whole answer. At run time, every golden call's
+baseline answer must still hold at least one non-empty text or number that
+normalization did not touch; otherwise the run is an error, because a fully
+normalized answer would let any change pass.
 Zero tools on either side is an error, not a pass, and a golden call that
 errors on the released image is flagged, since it proves nothing.
 

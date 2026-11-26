@@ -213,8 +213,9 @@ jobs:
   parity-e2e:
     # The reusable workflow end to end, as a generated server would call it:
     # pinned checkout of the client via job.workflow_sha, GHCR baseline
-    # resolution, three containers on one network. The candidate is the
-    # current mcp-searxng release, so it must pass against itself.
+    # resolution, three containers on one network. The candidate is mcp-searxng
+    # 0.6.0 pinned by digest, and release-version 0.6.1 keeps the baseline at
+    # 0.6.0, so a later searxng release cannot turn this repo red.
     name: Parity end to end
     permissions:
       contents: read
@@ -228,3 +229,4 @@ jobs:
       env-file: parity/selftest/e2e/parity.env
       golden: parity/selftest/e2e/golden.yaml
       expected: parity/selftest/e2e/expected.yaml
+      release-version: 0.6.1

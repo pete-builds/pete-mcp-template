@@ -5,23 +5,34 @@
 # annotations. That needs nothing in this file.
 #
 # Golden calls add behavior: each one is sent to both servers and the answers
-# are diffed. Only list READ-ONLY calls whose answer does not depend on a live
-# upstream service; both containers run with the dummy env in parity.env, so a
-# call that needs a real API key or a reachable upstream will fail on both
-# sides and prove nothing. Each call must say read_only: true.
-
-calls: []
-# Example:
+# are diffed. This is what catches an argument the server accepts and then
+# ignores, so give every tool at least one call that passes its arguments.
 #
-# calls:
-#   - id: hello-named           # stable name; differences are reported as calls.<id>...
-#     tool: hello
-#     arguments:
-#       name: parity
-#     read_only: true
+# Choosing calls:
+#   - READ-ONLY only. The call runs against the released image and the
+#     candidate; never list one that creates, changes or deletes anything.
+#     Each call must say read_only: true.
+#   - No live upstream. Both containers run on the dummy values in
+#     parity.env, so a call that needs a real API key or a reachable service
+#     fails on both sides and proves nothing (the summary warns when a call
+#     errors on the released image).
+#   - Deterministic. If an answer carries a timestamp or an id that changes
+#     every run, name it under normalize below.
+#
+# The call below exercises the sample hello tool. When you replace hello,
+# replace this call with one for your own tool.
+
+calls:
+  - id: hello-named # stable name; differences are reported as calls.<id>...
+    tool: hello
+    arguments:
+      name: parity
+    read_only: true
 
 # Volatile fields, blanked to "<normalized>" in every call answer before the
 # diff. JSON inside text answers is parsed first, so nested keys can be named.
+# A pattern that matches the empty string is refused, and so are keys that hold
+# a whole answer (content, text, result, ...): name the volatile field itself.
 normalize:
-  keys: []                     # e.g. [generated_at, request_id]
-  patterns: []                 # regexes, e.g. ['\d{4}-\d{2}-\d{2}T[0-9:.]+(Z|[+-]\d{2}:\d{2})?']
+  keys: [] # e.g. [generated_at, request_id]
+  patterns: [] # regexes, e.g. ['\d{4}-\d{2}-\d{2}T[0-9:.]+(Z|[+-]\d{2}:\d{2})?']

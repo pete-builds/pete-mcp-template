@@ -220,7 +220,9 @@ def test_missing_golden_is_an_error(tmp_path: Path) -> None:
 def test_template_starter_files_parse() -> None:
     root = Path(__file__).parent.parent / "template" / "parity"
     golden = parity.load_golden(root / "golden.yaml")
-    assert golden.calls == []
+    assert [(c.id, c.tool, c.arguments) for c in golden.calls] == [
+        ("hello-named", "hello", {"name": "parity"})
+    ]
     assert parity.load_expected(root / "expected.yaml") == []
 
 
@@ -232,7 +234,10 @@ def test_template_starter_files_parse() -> None:
         ("{change: tools.x, baseline: latest, reason: A long enough reason.}", "baseline"),
         ("{change: tools.x, baseline: 0.1.0}", "reason"),
         ("{change: tools.x, baseline: 0.1.0, reason: short}", "reason"),
-        ("{change: transport, baseline: 0.1.0, reason: A long enough reason.}", "unreachable"),
+        ("{change: transport, baseline: 0.1.0, reason: A long enough reason.}", "one tool"),
+        ("{change: tools, baseline: 0.1.0, reason: A long enough reason.}", "one tool"),
+        ("{change: calls, baseline: 0.1.0, reason: A long enough reason.}", "one tool"),
+        ("{change: 'tools..x', baseline: 0.1.0, reason: A long enough reason.}", "empty"),
     ],
 )
 def test_expected_entries_are_validated(tmp_path: Path, entry: str, match: str) -> None:
@@ -297,7 +302,8 @@ def test_declaration_is_a_path_prefix_not_a_substring() -> None:
 
 
 def test_removed_tool_fails() -> None:
-    v = parity.judge(snap({"hello": HELLO}), snap({}), [], "0.1.0")
+    other = dict(HELLO, name="other")
+    v = parity.judge(snap({"hello": HELLO, "other": other}), snap({"other": other}), [], "0.1.0")
     assert v.code == parity.EXIT_FAIL
     assert "`tools.hello` | removed" in v.summary
 
@@ -347,3 +353,169 @@ def test_warns_only_when_git_is_ahead_of_ghcr(capsys: pytest.CaptureFixture[str]
     assert "::warning::" not in capsys.readouterr().out
     parity.resolve_baseline(f"ghcr.io/{REPO}", ["v0.31.0"], None, FakeGhcr([["0.30.0"]]), None)
     assert "::warning::parity: highest git release tag v0.31.0" in capsys.readouterr().out
+
+
+# --- review fixes -----------------------------------------------------------
+
+
+def test_zero_tools_on_both_sides_is_an_error_not_a_pass() -> None:
+    v = parity.judge(snap({}), snap({}), [], "0.1.0")
+    assert v.code == parity.EXIT_ERROR
+    assert v.line.startswith("parity: ERROR baseline and candidate listed 0 tools")
+
+
+def test_zero_tools_on_one_side_is_an_error() -> None:
+    v = parity.judge(snap({"hello": HELLO}), snap({}), [], "0.1.0")
+    assert v.code == parity.EXIT_ERROR
+    assert "candidate listed 0 tools" in v.line
+
+
+RAW_TOOL_DUMP = {
+    "name": "hello",
+    "title": "Hello",
+    "description": "Sample tool. Replace with your own.",
+    "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}},
+    "outputSchema": {"type": "object"},
+    "annotations": {"readOnlyHint": True},
+    "_meta": {"fastmcp": {"tags": []}},
+    "icons": [],
+}
+
+
+def test_tool_record_keeps_every_compared_field_and_drops_meta() -> None:
+    # Spelled out rather than read from TOOL_FIELDS, so dropping a field from
+    # the filter goes red here without docker.
+    assert set(parity.tool_record(RAW_TOOL_DUMP)) == {
+        "name",
+        "title",
+        "description",
+        "inputSchema",
+        "outputSchema",
+        "annotations",
+    }
+
+
+def test_every_compared_tool_field_reaches_the_diff() -> None:
+    for name in ("title", "description", "inputSchema", "outputSchema", "annotations"):
+        changed = dict(RAW_TOOL_DUMP, **{name: "changed"})
+        base = snap({"hello": parity.tool_record(RAW_TOOL_DUMP)})
+        cand = snap({"hello": parity.tool_record(changed)})
+        v = parity.judge(base, cand, [], "0.1.0")
+        assert v.code == parity.EXIT_FAIL, name
+        assert f"`tools.hello.{name}" in v.summary, name
+
+
+def test_call_record_keeps_every_compared_field() -> None:
+    raw = {
+        "isError": False,
+        "content": [{"type": "text", "text": "x"}],
+        "structuredContent": {"result": "x"},
+        "_meta": {"fastmcp": {"wrap_result": True}},
+        "resultType": "complete",
+    }
+    assert set(parity.call_record(raw)) == {"isError", "content", "structuredContent"}
+
+
+@pytest.mark.parametrize(
+    "text, ok",
+    [
+        ("MCP_AUTH_TOKEN=x\nWEATHER_API_KEY=y\n", True),
+        ("MCP_HOST=0.0.0.0\n", False),
+        ("mcp_host=0.0.0.0\n", False),
+        ("MCP_PORT=3800\n", False),
+        ("FASTMCP_HOST=0.0.0.0\n", False),
+        ("MCP_HOST\n", False),
+        ("MCP_TRANSPORT=streamable-http\n", False),
+    ],
+)
+def test_env_file_may_not_choose_where_the_server_listens(text: str, ok: bool) -> None:
+    http_release = {"MCP_TRANSPORT": "streamable-http"}
+    if ok:
+        assert parity.check_env(text, http_release) == ["MCP_AUTH_TOKEN", "WEATHER_API_KEY"]
+    else:
+        with pytest.raises(parity.ConfigError, match="both containers"):
+            parity.check_env(text, http_release)
+
+
+def test_env_file_stdio_exception_only_while_release_is_stdio() -> None:
+    line = "MCP_AUTH_TOKEN=x\nMCP_TRANSPORT=streamable-http\n"
+    stdio_release = parity.image_env(["MCP_TRANSPORT=stdio", "MCP_HOST=0.0.0.0"])
+    assert parity.check_env(line, stdio_release) == ["MCP_AUTH_TOKEN", "MCP_TRANSPORT"]
+    with pytest.raises(parity.ConfigError):
+        parity.check_env("MCP_TRANSPORT=stdio\n", stdio_release)
+    with pytest.raises(parity.ConfigError):
+        parity.check_env(line, parity.image_env(["MCP_TRANSPORT=streamable-http"]))
+
+
+def test_check_env_summary_lists_names_never_values(tmp_path: Path) -> None:
+    env = write(tmp_path, "parity.env", "# c\nMCP_AUTH_TOKEN=s3cr3t-value\nOTHER=v\n")
+    image = write(tmp_path, "img.json", json.dumps(["MCP_TRANSPORT=streamable-http"]))
+    summary = tmp_path / "env.md"
+    code = parity.main(
+        [
+            "check-env",
+            "--env-file",
+            str(env),
+            "--env-file-label",
+            "parity/parity.env",
+            "--baseline-image-env",
+            str(image),
+            "--summary",
+            str(summary),
+        ]
+    )
+    assert code == parity.EXIT_PASS
+    text = summary.read_text()
+    assert "`MCP_AUTH_TOKEN`" in text and "`OTHER`" in text
+    assert "s3cr3t" not in text
+
+
+@pytest.mark.parametrize("pattern", ["(?s).*", ".*", "x*", "", "a?"])
+def test_patterns_matching_the_empty_string_are_refused(tmp_path: Path, pattern: str) -> None:
+    p = write(tmp_path, "g.yaml", f"normalize:\n  patterns: ['{pattern}']\n")
+    with pytest.raises(parity.ConfigError, match="empty string"):
+        parity.load_golden(p)
+
+
+@pytest.mark.parametrize("key", ["text", "content", "structuredContent", "result"])
+def test_keys_holding_a_whole_answer_are_refused(tmp_path: Path, key: str) -> None:
+    p = write(tmp_path, "g.yaml", f"normalize:\n  keys: [{key}]\n")
+    with pytest.raises(parity.ConfigError, match="whole answer"):
+        parity.load_golden(p)
+
+
+def test_normalize_settings_are_printed_in_the_summary() -> None:
+    golden = parity.Golden(
+        ["generated_at"], [r"\d{4}-\d{2}"], [parity.GoldenCall("c", "t", {}, ["rid"], [])]
+    )
+    v = parity.judge(snap({"hello": HELLO}), snap({"hello": HELLO}), [], "0.1.0", golden)
+    assert "`generated_at`" in v.summary
+    assert r"`\d{4}-\d{2}`" in v.summary
+    assert "Call `c` also normalizes keys `rid`" in v.summary
+
+
+def test_golden_call_erroring_on_baseline_warns() -> None:
+    calls = {"bad": {"isError": True, "content": []}, "ok": {"isError": False}}
+    v = parity.judge(snap({"hello": HELLO}, calls), snap({"hello": HELLO}, calls), [], "0.1.0")
+    assert v.code == parity.EXIT_PASS
+    assert len(v.warnings) == 1 and "`bad`" in v.warnings[0]
+    assert "Warning: golden call `bad`" in v.summary
+    proto = {"p": {"protocolError": "unknown tool"}}
+    v = parity.judge(snap({"hello": HELLO}, proto), snap({"hello": HELLO}, proto), [], "0.1.0")
+    assert len(v.warnings) == 1
+
+
+def test_covers_matches_segments_not_text() -> None:
+    a = snap({"a": HELLO, "a.b": HELLO})
+    b = snap({"a": HELLO, "a.b": dict(HELLO, description="changed")})
+    exp = [parity.Expected("tools.a", "0.1.0", "Declares tool a only, not a.b.")]
+    v = parity.judge(a, b, exp, "0.1.0")
+    assert v.code == parity.EXIT_FAIL
+    assert '`tools."a.b".description`' in v.summary
+    exp = [parity.Expected('tools."a.b"', "0.1.0", "Declares the dotted tool by quoting it.")]
+    assert parity.judge(a, b, exp, "0.1.0").code == parity.EXIT_PASS
+
+
+def test_path_round_trip() -> None:
+    for segs in [("tools", "a"), ("tools", "a.b", "description"), ("calls", 'q"x', "0")]:
+        assert parity.parse_path(parity.format_path(segs)) == segs

@@ -75,8 +75,11 @@ compares the tool list, each tool's title, full description, input and output
 schema and annotations, and the answers to the read-only golden calls in
 `parity/golden.yaml`. Any difference fails the check. This catches what a green
 test suite and a green healthcheck both miss: a renamed tool parameter, a
-description the framework truncated, an argument the server now accepts and
-ignores, and a server that only listens on `127.0.0.1` inside its container.
+description the framework truncated, a server that only listens on `127.0.0.1`
+inside its container, and, for any tool with a golden call that passes the
+argument, an argument the server now accepts and ignores. The starter golden
+file ships one such call for the sample `hello` tool; replace it with calls for
+your own tools.
 The job always ends with one line starting `parity:`; a first release with no
 image yet says `parity: no baseline image, first release, skipped`.
 
@@ -86,6 +89,16 @@ whose answers depend on a live web service (search, weather, a vendor API)
 gets schema and transport parity only, until recorded upstream fixtures exist.
 It says nothing about tools the golden set never calls, or about load,
 memory or timing.
+
+**Guard rails.** The env file reaches both containers, so it may not set
+`MCP_HOST`, `MCP_PORT` or `MCP_TRANSPORT` (or their `FASTMCP_` forms): that
+would hide a change in where the server listens. The one exception is
+`MCP_TRANSPORT=streamable-http` for a server whose released image defaults to
+stdio, which the template writes itself. The summary lists the env file's
+variable names (never values) and every normalize key and pattern. A pattern
+that matches the empty string is refused, as are keys that hold a whole answer.
+Zero tools on either side is an error, not a pass, and a golden call that
+errors on the released image is flagged, since it proves nothing.
 
 **Declaring an intended change.** When a change is meant to alter what clients
 see, the failing run's summary lists each difference by path, for example
@@ -99,8 +112,9 @@ changes:
     reason: Renamed the hello tool's argument from name to who, to match the other tools.
 ```
 
-An entry covers its path and everything under it, and applies only while the
-baseline is the release it names, so it stops applying after the next release
+An entry must name at least one tool or call (`tools.<name>` or `calls.<id>`).
+It covers its path and everything under it, compared segment by segment, and
+applies only while the baseline is the release it names, so it stops applying after the next release
 and cannot hide a later change. Reviewers read this file instead of the diff.
 
 **How the pinned client is found.** A reusable workflow's `github` context

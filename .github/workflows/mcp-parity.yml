@@ -93,6 +93,10 @@ jobs:
             echo "::error::job.workflow_repository/job.workflow_sha are not set; refusing to guess which parity client to run"
             exit 1
           fi
+          if [ "$WF_REPO" != "pete-builds/pete-mcp-template" ]; then
+            echo "::error::parity tooling must come from pete-builds/pete-mcp-template, not $WF_REPO"
+            exit 1
+          fi
           echo "repo=$WF_REPO" >> "$GITHUB_OUTPUT"
           echo "sha=$WF_SHA" >> "$GITHUB_OUTPUT"
 
@@ -187,6 +191,7 @@ jobs:
           set -euo pipefail
           if [ -n "$PARITY_ENV_FILE_INPUT" ]; then
             export PARITY_ENV_FILE="caller/$PARITY_ENV_FILE_INPUT"
+            export PARITY_ENV_FILE_LABEL="$PARITY_ENV_FILE_INPUT"
           fi
           export PARITY_OUT="$RUNNER_TEMP/parity"
           bash parity-tool/parity/run.sh

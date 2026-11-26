@@ -6,9 +6,11 @@
 # path here with the release it differs from and one plain-English sentence on
 # why. A reviewer reads this file instead of the diff.
 #
-# An entry covers its path and everything under it. It only applies while the
-# baseline is the release it names, so after the next release it stops
-# applying on its own and can be deleted.
+# An entry must name at least one tool or call (tools.<name> or calls.<id>);
+# a bare "tools" or "calls" is refused. It covers its path and everything under
+# it. A tool name containing a dot is written quoted: tools."a.b".description.
+# An entry only applies while the baseline is the release it names, so after
+# the next release it stops applying on its own and can be deleted.
 #
 # changes:
 #   - change: tools.hello.inputSchema.properties

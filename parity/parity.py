@@ -54,6 +54,23 @@ SEMVER = re.compile(r"^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 TOOL_FIELDS = ("name", "title", "description", "inputSchema", "outputSchema", "annotations")
 CALL_FIELDS = ("isError", "content", "structuredContent")
 NORMALIZED = "<normalized>"
+
+# Keys that hold a whole answer rather than a volatile field inside one.
+# Normalizing any of these would blank the answer and make every call pass.
+STRUCTURAL_KEYS = {"content", "structuredContent", "isError", "text", "type", "result"}
+
+# Variables that decide where and how the server listens. The env file goes to
+# BOTH containers, so setting one there would hide exactly the regression this
+# check exists for (a new default that only binds 127.0.0.1). Compared without
+# case, because pydantic-settings reads them without case.
+REFUSED_ENV = {
+    "MCP_HOST",
+    "MCP_PORT",
+    "MCP_TRANSPORT",
+    "FASTMCP_HOST",
+    "FASTMCP_PORT",
+    "FASTMCP_TRANSPORT",
+}
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}  # noqa: S104 (refused, not bound)
 
 
@@ -327,11 +344,53 @@ class Golden:
     calls: list[GoldenCall]
 
 
+def format_path(segs: tuple[str, ...]) -> str:
+    """Dotted path; a segment holding a dot or a quote is written as a JSON string."""
+    return ".".join(json.dumps(s) if (not s or "." in s or '"' in s) else s for s in segs)
+
+
+def parse_path(text: str) -> tuple[str, ...]:
+    """Inverse of format_path: ``tools."a.b".description`` is three segments."""
+    text = text.strip()
+    segs: list[str] = []
+    i = 0
+    while i < len(text):
+        if text[i] == '"':
+            try:
+                seg, i = json.JSONDecoder().raw_decode(text, i)
+            except ValueError as exc:
+                raise ConfigError(f"bad quoted segment in path {text!r}") from exc
+            if not isinstance(seg, str):
+                raise ConfigError(f"bad quoted segment in path {text!r}")
+        else:
+            j = text.find(".", i)
+            j = len(text) if j == -1 else j
+            seg = text[i:j]
+            i = j
+        if not seg:
+            raise ConfigError(f"empty segment in path {text!r}")
+        segs.append(seg)
+        if i < len(text):
+            if text[i] != "." or i + 1 == len(text):
+                raise ConfigError(f"malformed path {text!r}")
+            i += 1
+    return tuple(segs)
+
+
 @dataclass
 class Expected:
     change: str
     baseline: str
     reason: str
+    segs: tuple[str, ...] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.segs = parse_path(self.change)
+        if len(self.segs) < 2 or self.segs[0] not in ("tools", "calls"):
+            raise ConfigError(
+                f"change {self.change!r} must name at least one tool or call: "
+                "tools.<name>... or calls.<id>..."
+            )
 
 
 def _load_yaml(path: Path) -> Any:
@@ -394,9 +453,20 @@ def load_golden(path: Path) -> Golden:
         )
     for p in patterns + [p for c in calls for p in c.patterns]:
         try:
-            re.compile(p)
+            compiled = re.compile(p)
         except re.error as exc:
             raise ConfigError(f"bad normalize pattern {p!r}: {exc}") from exc
+        if compiled.search("") is not None:
+            raise ConfigError(
+                f"normalize pattern {p!r} matches the empty string, so it can match "
+                "anything; anchor it to the volatile text it is meant to hide"
+            )
+    for k in keys + [k for c in calls for k in c.keys]:
+        if k in STRUCTURAL_KEYS:
+            raise ConfigError(
+                f"normalize key {k!r} holds a whole answer, not a volatile field; "
+                "name the field inside it instead"
+            )
     return Golden(keys, patterns, calls)
 
 
@@ -419,9 +489,10 @@ def load_expected(path: Path) -> list[Expected]:
             raise ConfigError(f"{where} needs reason: a plain-English sentence")
         if not isinstance(baseline, str) or parse_semver(baseline) is None:
             raise ConfigError(f"{where} needs baseline: the X.Y.Z release it differs from")
-        if change.startswith("transport"):
-            raise ConfigError(f"{where}: an unreachable server cannot be declared")
-        out.append(Expected(change.strip(), baseline.strip(), reason.strip()))
+        try:
+            out.append(Expected(change.strip(), baseline.strip(), reason.strip()))
+        except ConfigError as exc:
+            raise ConfigError(f"{where}: {exc}") from exc
     return out
 
 
@@ -467,17 +538,21 @@ def normalize(value: Any, keys: set[str], patterns: list[re.Pattern[str]]) -> An
 
 @dataclass
 class Difference:
-    path: str
+    segs: tuple[str, ...]
     kind: str  # added, removed, changed
     baseline: Any = None
     candidate: Any = None
 
+    @property
+    def path(self) -> str:
+        return format_path(self.segs)
 
-def deep_diff(base: Any, cand: Any, path: str) -> list[Difference]:
+
+def deep_diff(base: Any, cand: Any, path: tuple[str, ...]) -> list[Difference]:
     if isinstance(base, dict) and isinstance(cand, dict):
         out: list[Difference] = []
         for k in sorted(set(base) | set(cand), key=str):
-            sub = f"{path}.{k}"
+            sub = (*path, str(k))
             if k not in cand:
                 out.append(Difference(sub, "removed", base[k], None))
             elif k not in base:
@@ -488,7 +563,7 @@ def deep_diff(base: Any, cand: Any, path: str) -> list[Difference]:
     if isinstance(base, list) and isinstance(cand, list):
         out = []
         for i in range(max(len(base), len(cand))):
-            sub = f"{path}.{i}"
+            sub = (*path, str(i))
             if i >= len(cand):
                 out.append(Difference(sub, "removed", base[i], None))
             elif i >= len(base):
@@ -501,8 +576,9 @@ def deep_diff(base: Any, cand: Any, path: str) -> list[Difference]:
     return []
 
 
-def covers(change: str, path: str) -> bool:
-    return path == change or path.startswith(change + ".")
+def covers(change: tuple[str, ...], path: tuple[str, ...]) -> bool:
+    """True when ``path`` is ``change`` or under it, compared segment by segment."""
+    return path[: len(change)] == change
 
 
 @dataclass
@@ -510,6 +586,43 @@ class Verdict:
     code: int
     line: str
     summary: str
+    warnings: list[str] = field(default_factory=list)
+
+
+def tool_record(dumped: dict[str, Any]) -> dict[str, Any]:
+    """The parts of one tools/list entry that are compared."""
+    return {k: dumped[k] for k in TOOL_FIELDS if k in dumped}
+
+
+def call_record(dumped: dict[str, Any]) -> dict[str, Any]:
+    """The parts of one tools/call result that are compared."""
+    return {k: dumped[k] for k in CALL_FIELDS if k in dumped}
+
+
+def call_errored(record: Any) -> bool:
+    return isinstance(record, dict) and (record.get("isError") is True or "protocolError" in record)
+
+
+def normalize_lines(golden: Golden | None) -> list[str]:
+    if golden is None:
+        return []
+    lines = [
+        "Normalized before the diff: keys "
+        + (", ".join(f"`{k}`" for k in golden.keys) or "none")
+        + "; patterns "
+        + (", ".join(f"`{p}`" for p in golden.patterns) or "none")
+        + "."
+    ]
+    for c in golden.calls:
+        if c.keys or c.patterns:
+            lines.append(
+                f"Call `{c.id}` also normalizes keys "
+                + (", ".join(f"`{k}`" for k in c.keys) or "none")
+                + "; patterns "
+                + (", ".join(f"`{p}`" for p in c.patterns) or "none")
+                + "."
+            )
+    return [*lines, ""]
 
 
 def _short(value: Any, limit: int = 160) -> str:
@@ -523,6 +636,7 @@ def judge(
     cand: dict[str, Any],
     expected: list[Expected],
     baseline_label: str,
+    golden: Golden | None = None,
 ) -> Verdict:
     """Turn two snapshots into a verdict. Unreachable servers always fail."""
     lines = [f"## MCP release parity against `{baseline_label}`", ""]
@@ -550,15 +664,40 @@ def judge(
             "\n".join(lines) + "\n",
         )
 
-    diffs = deep_diff(base["tools"], cand["tools"], "tools") + deep_diff(
-        base["calls"], cand["calls"], "calls"
+    empty = [role for role, snap in (("baseline", base), ("candidate", cand)) if not snap["tools"]]
+    if empty:
+        lines.append(
+            f"- **{' and '.join(empty)}** listed 0 tools. Two empty lists are equal, which "
+            "proves nothing; usually the server failed to register its tools or the "
+            "client was not authorized to see them."
+        )
+        return Verdict(
+            EXIT_ERROR,
+            f"parity: ERROR {' and '.join(empty)} listed 0 tools, nothing to compare "
+            f"(baseline {baseline_label})",
+            "\n".join(lines) + "\n",
+        )
+
+    warnings = [
+        f"golden call `{cid}` returned an error on the baseline {baseline_label}, so it "
+        "proves nothing about behavior; fix its arguments or remove it"
+        for cid, rec in sorted(base["calls"].items())
+        if call_errored(rec)
+    ]
+    lines += [f"> Warning: {w}." for w in warnings]
+    if warnings:
+        lines.append("")
+    lines += normalize_lines(golden)
+
+    diffs = deep_diff(base["tools"], cand["tools"], ("tools",)) + deep_diff(
+        base["calls"], cand["calls"], ("calls",)
     )
     active = [e for e in expected if parse_semver(e.baseline) == parse_semver(baseline_label)]
     stale = [e for e in expected if e not in active]
     declared: list[tuple[Difference, Expected]] = []
     undeclared: list[Difference] = []
     for d in diffs:
-        match = next((e for e in active if covers(e.change, d.path)), None)
+        match = next((e for e in active if covers(e.segs, d.segs)), None)
         if match:
             declared.append((d, match))
         else:
@@ -621,7 +760,7 @@ def judge(
             f"{n_calls} golden calls, {len(declared)} declared differences)"
         )
         code = EXIT_PASS
-    return Verdict(code, line, "\n".join(lines) + "\n")
+    return Verdict(code, line, "\n".join(lines) + "\n", warnings)
 
 
 # --------------------------------------------------------------------------
@@ -668,7 +807,7 @@ async def _collect_once(
                 page = await session.list_tools(params=params)
                 for tool in page.tools:
                     dumped = tool.model_dump(mode="json", by_alias=True, exclude_none=True)
-                    tools[tool.name] = {k: dumped[k] for k in TOOL_FIELDS if k in dumped}
+                    tools[tool.name] = tool_record(dumped)
                 cursor = page.next_cursor
                 if not cursor:
                     break
@@ -677,7 +816,7 @@ async def _collect_once(
                 try:
                     result = await session.call_tool(call.tool, call.arguments)
                     dumped = result.model_dump(mode="json", by_alias=True, exclude_none=True)
-                    record: Any = {k: dumped[k] for k in CALL_FIELDS if k in dumped}
+                    record: Any = call_record(dumped)
                 except Exception as exc:  # a protocol error is a result worth diffing
                     record = {"protocolError": str(exc)}
                 keys = set(golden.keys) | set(call.keys)
@@ -739,6 +878,8 @@ def cmd_compare(args: argparse.Namespace) -> int:
         (out / "summary.md").write_text(v.summary)
         (out / "verdict.txt").write_text(v.line + "\n")
         print(v.summary)
+        for w in v.warnings:
+            print(f"::warning::parity: {w}")
         print(v.line)
         return v.code
 
@@ -766,7 +907,79 @@ def cmd_compare(args: argparse.Namespace) -> int:
     base, cand = anyio.run(both)
     (out / "baseline.json").write_text(json.dumps(base, indent=2, sort_keys=True))
     (out / "candidate.json").write_text(json.dumps(cand, indent=2, sort_keys=True))
-    return finish(judge(base, cand, expected, args.baseline_label))
+    return finish(judge(base, cand, expected, args.baseline_label, golden))
+
+
+# --------------------------------------------------------------------------
+# The dummy env file (standard library only; runs on the CI runner)
+# --------------------------------------------------------------------------
+
+
+def parse_env_file(text: str) -> list[tuple[str, str | None]]:
+    """Names and values in docker --env-file order. A bare NAME has value None."""
+    out: list[tuple[str, str | None]] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, sep, value = line.partition("=")
+        out.append((name.strip(), value if sep else None))
+    return out
+
+
+def image_env(doc: Any) -> dict[str, str]:
+    """``docker image inspect --format '{{json .Config.Env}}'`` output as a dict."""
+    env: dict[str, str] = {}
+    for item in doc or []:
+        name, _, value = str(item).partition("=")
+        env[name.upper()] = value
+    return env
+
+
+def check_env(text: str, baseline_image_env: dict[str, str]) -> list[str]:
+    """Refuse listen settings in the env file; return the variable names it sets.
+
+    The one exception is the line the template writes for a stdio server:
+    MCP_TRANSPORT=streamable-http, allowed only while the RELEASED image itself
+    defaults to stdio. Once a release serves HTTP by default, the line is refused.
+    """
+    names: list[str] = []
+    for name, value in parse_env_file(text):
+        names.append(name)
+        upper = name.upper()
+        if upper not in REFUSED_ENV:
+            continue
+        stdio_case = (
+            upper == "MCP_TRANSPORT"
+            and value is not None
+            and value.strip() == "streamable-http"
+            and baseline_image_env.get("MCP_TRANSPORT", "").strip() == "stdio"
+        )
+        if not stdio_case:
+            raise ConfigError(
+                f"the env file sets {name}. It goes to both containers, so it would "
+                "hide a change in where the server listens; remove it (allowed: "
+                "MCP_TRANSPORT=streamable-http while the released image defaults to stdio)"
+            )
+    return names
+
+
+def cmd_check_env(args: argparse.Namespace) -> int:
+    summary = Path(args.summary)
+    shown = args.env_file_label or args.env_file or "none"
+    try:
+        base_env = image_env(json.loads(Path(args.baseline_image_env).read_text()))
+        text = Path(args.env_file).read_text() if args.env_file else ""
+        names = check_env(text, base_env)
+    except (ConfigError, OSError, ValueError) as exc:
+        summary.write_text(f"Env file `{shown}`: refused. {exc}\n\n")
+        print(f"parity: ERROR {exc}")
+        return EXIT_ERROR
+    listed = ", ".join(f"`{n}`" for n in names) or "nothing"
+    note = f"Env file `{shown}` sets {listed} (names only, values not shown).\n\n"
+    summary.write_text(note)
+    print(f"parity: {note.strip()}")
+    return EXIT_PASS
 
 
 # --------------------------------------------------------------------------
@@ -792,6 +1005,13 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--out", required=True)
     c.add_argument("--wait", type=float, default=60.0, help="seconds to wait for each server")
     c.set_defaults(func=cmd_compare)
+
+    e = sub.add_parser("check-env", help="refuse listen settings in the dummy env file")
+    e.add_argument("--env-file", default="", help="the dummy env file, if any")
+    e.add_argument("--env-file-label", default="", help="how to name it in the summary")
+    e.add_argument("--baseline-image-env", required=True, help="JSON list of K=V")
+    e.add_argument("--summary", required=True, help="markdown file to write")
+    e.set_defaults(func=cmd_check_env)
 
     args = parser.parse_args(argv)
     code: int = args.func(args)

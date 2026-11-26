@@ -29,13 +29,17 @@ calls:
       name: parity
     read_only: true
 
-# Volatile fields, blanked to "<normalized>" in every call answer before the
-# diff. JSON inside text answers is parsed first, so nested keys can be named.
-# A pattern that matches the empty string is refused, and so are keys that hold
-# a whole answer (content, text, result, ...): name the volatile field itself.
-# Each call's answer must keep at least one text or number that normalization
-# leaves untouched, or the run is an error: hide the volatile field, not the
-# answer.
+# Volatile fields, by KEY NAME only: the value of every key listed here is
+# blanked to "<normalized>", at any depth, in every call answer before the diff
+# (JSON inside text answers is parsed first, so nested keys can be named). A
+# call can add its own under normalize: keys: [...]. Regex patterns are not
+# supported; a golden file that has patterns is an error.
+#
+# A key hides that field by design. Every difference a key hides is still
+# listed in the run summary under "hidden by normalization", with both values,
+# so name only fields that change on every run (timestamps, request ids), never
+# a field whose value is the answer. Keys that hold a whole answer (content,
+# text, result, ...) are refused, and each call's answer must keep at least one
+# text or number that no key touches, or the run is an error.
 normalize:
   keys: [] # e.g. [generated_at, request_id]
-  patterns: [] # regexes, e.g. ['\d{4}-\d{2}-\d{2}T[0-9:.]+(Z|[+-]\d{2}:\d{2})?']

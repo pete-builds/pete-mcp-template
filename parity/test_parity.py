@@ -331,14 +331,14 @@ def test_golden_call_difference_fails() -> None:
     assert "calls.hi.content.0.text.greeting" in v.summary
 
 
-def test_normalize_blanks_named_keys_and_patterns() -> None:
-    import re
-
+def test_normalize_blanks_named_keys_at_any_depth() -> None:
     record = parity.decode_json_strings(
-        {"text": '{"at": "2026-11-26T10:00:00Z", "n": 1, "msg": "id 42 at 2026-11-26T10:00:00Z"}'}
+        {"text": '{"at": "2026-11-26T10:00:00Z", "n": 1, "inner": {"at": "x", "m": "y"}}'}
     )
-    out = parity.normalize(record, {"at"}, [re.compile(r"\d{4}-\d{2}-\d{2}T[0-9:]+Z")])
-    assert out == {"text": {"at": "<normalized>", "n": 1, "msg": "id 42 at <normalized>"}}
+    out = parity.normalize(record, {"at"})
+    assert out == {
+        "text": {"at": "<normalized>", "n": 1, "inner": {"at": "<normalized>", "m": "y"}}
+    }
 
 
 def test_loopback_urls_are_refused() -> None:
@@ -470,10 +470,17 @@ def test_check_env_summary_lists_names_never_values(tmp_path: Path) -> None:
     assert "s3cr3t" not in text
 
 
-@pytest.mark.parametrize("pattern", ["(?s).*", ".*", "x*", "", "a?"])
-def test_patterns_matching_the_empty_string_are_refused(tmp_path: Path, pattern: str) -> None:
-    p = write(tmp_path, "g.yaml", f"normalize:\n  patterns: ['{pattern}']\n")
-    with pytest.raises(parity.ConfigError, match="empty string"):
+@pytest.mark.parametrize("patterns", ["['(?s).*']", "['\\d{4}']", "[]"])
+def test_global_patterns_are_an_error_not_ignored(tmp_path: Path, patterns: str) -> None:
+    p = write(tmp_path, "g.yaml", f"normalize:\n  keys: []\n  patterns: {patterns}\n")
+    with pytest.raises(parity.ConfigError) as err:
+        parity.load_golden(p)
+    assert "patterns were removed; normalize volatile fields by key" in str(err.value)
+
+
+def test_unknown_normalize_settings_are_refused(tmp_path: Path) -> None:
+    p = write(tmp_path, "g.yaml", "normalize:\n  pattern: ['x']\n")
+    with pytest.raises(parity.ConfigError, match="unknown setting"):
         parity.load_golden(p)
 
 
@@ -485,12 +492,9 @@ def test_keys_holding_a_whole_answer_are_refused(tmp_path: Path, key: str) -> No
 
 
 def test_normalize_settings_are_printed_in_the_summary() -> None:
-    golden = parity.Golden(
-        ["generated_at"], [r"\d{4}-\d{2}"], [parity.GoldenCall("c", "t", {}, ["rid"], [])]
-    )
+    golden = parity.Golden(["generated_at"], [parity.GoldenCall("c", "t", {}, ["rid"])])
     v = parity.judge(snap({"hello": HELLO}), snap({"hello": HELLO}), [], "0.1.0", golden)
-    assert "`generated_at`" in v.summary
-    assert r"`\d{4}-\d{2}`" in v.summary
+    assert "Normalized before the diff (by key): `generated_at`." in v.summary
     assert "Call `c` also normalizes keys `rid`" in v.summary
 
 
@@ -557,24 +561,14 @@ def greeting_snap(text: str = "hello, parity", extra: dict[str, object] | None =
     return snap({"hello": HELLO}, {"hello-named": record})
 
 
-def golden_with(keys=(), patterns=(), call_keys=(), call_patterns=()) -> parity.Golden:
-    call = parity.GoldenCall(
-        "hello-named", "hello", {"name": "parity"}, list(call_keys), list(call_patterns)
-    )
-    return parity.Golden(list(keys), list(patterns), [call])
+def golden_with(keys=(), call_keys=()) -> parity.Golden:
+    call = parity.GoldenCall("hello-named", "hello", {"name": "parity"}, list(call_keys))
+    return parity.Golden(list(keys), [call])
 
 
 @pytest.mark.parametrize(
     "golden",
-    [
-        golden_with(patterns=[r"[\s\S]+"]),
-        golden_with(patterns=[r".+"]),
-        golden_with(patterns=[r"^.+$"]),
-        golden_with(patterns=[r"\w+"]),
-        golden_with(keys=["greeting"]),
-        golden_with(call_keys=["greeting"]),
-        golden_with(call_patterns=[r"[\s\S]+"]),
-    ],
+    [golden_with(keys=["greeting"]), golden_with(call_keys=["greeting"])],
 )
 def test_normalization_that_erases_the_answer_is_an_error(golden: parity.Golden) -> None:
     # The dropped-argument regression: baseline says hello, parity; candidate
@@ -591,8 +585,6 @@ def test_narrow_normalization_of_a_timestamp_still_passes() -> None:
     cand = greeting_snap(extra={"generated_at": "2026-11-26T10:05:00Z"})
     v = parity.judge(base, cand, [], "0.1.0", golden_with(keys=["generated_at"]))
     assert v.code == parity.EXIT_PASS, v.summary
-    pattern = golden_with(patterns=[r"\d{4}-\d{2}-\d{2}T[0-9:]+Z"])
-    assert parity.judge(base, cand, [], "0.1.0", pattern).code == parity.EXIT_PASS
 
 
 def test_narrow_normalization_still_catches_a_dropped_argument() -> None:
@@ -619,14 +611,15 @@ def test_tool_list_gets_the_same_property_check() -> None:
     assert v.line.startswith("parity: ERROR tool x: normalization leaves nothing to compare")
 
 
-def test_per_call_empty_matching_pattern_is_refused(tmp_path: Path) -> None:
+def test_per_call_patterns_are_an_error_not_ignored(tmp_path: Path) -> None:
     text = (
         "calls:\n"
         "  - id: a\n    tool: hello\n    read_only: true\n"
-        "    normalize:\n      patterns: ['.*']\n"
+        "    normalize:\n      patterns: ['\\d{4}']\n"
     )
-    with pytest.raises(parity.ConfigError, match="empty string"):
+    with pytest.raises(parity.ConfigError) as err:
         parity.load_golden(write(tmp_path, "g.yaml", text))
+    assert "patterns were removed; normalize volatile fields by key" in str(err.value)
 
 
 def test_per_call_whole_answer_key_is_refused(tmp_path: Path) -> None:
@@ -637,3 +630,55 @@ def test_per_call_whole_answer_key_is_refused(tmp_path: Path) -> None:
     )
     with pytest.raises(parity.ConfigError, match="whole answer"):
         parity.load_golden(write(tmp_path, "g.yaml", text))
+
+
+# --- round three: keys only, hidden differences listed ----------------------
+
+
+def test_a_key_that_hides_the_regression_passes_but_is_listed() -> None:
+    # keys: [greeting] names the very field the dropped argument changes. By
+    # contract that hides it, so the verdict is PASS; the summary must say so.
+    # ("unit" keeps something un-normalized, so the property backstop is met.)
+    base = greeting_snap(extra={"unit": "C"})
+    cand = greeting_snap("hello, world", extra={"unit": "C"})
+    v = parity.judge(base, cand, [], "0.1.0", golden_with(keys=["greeting"]))
+    assert v.code == parity.EXIT_PASS
+    assert "2 hidden by normalization" in v.line
+    assert "difference(s) hidden by normalization" in v.summary
+    rows = [r for r in v.summary.splitlines() if r.startswith("| `calls.hello-named")]
+    assert rows == [
+        "| `calls.hello-named.content.0.text.greeting` | hello, parity | hello, world |",
+        "| `calls.hello-named.structuredContent.result.greeting` | hello, parity | hello, world |",
+    ]
+
+
+def test_hidden_values_are_truncated() -> None:
+    long_a, long_b = "a" * 200, "b" * 200
+    base = greeting_snap(long_a, extra={"unit": "C"})
+    cand = greeting_snap(long_b, extra={"unit": "C"})
+    v = parity.judge(base, cand, [], "0.1.0", golden_with(keys=["greeting"]))
+    row = next(r for r in v.summary.splitlines() if ".content.0.text.greeting" in r)
+    assert "a" * 77 + "..." in row and "a" * 78 not in row
+
+
+def test_nothing_hidden_when_normalized_fields_did_not_change() -> None:
+    base = greeting_snap(extra={"generated_at": "same"})
+    v = parity.judge(base, base, [], "0.1.0", golden_with(keys=["generated_at"]))
+    assert v.code == parity.EXIT_PASS
+    assert "0 hidden by normalization" in v.line
+    assert "hidden by normalization\n" not in v.summary
+
+
+def test_a_volatile_timestamp_is_listed_as_hidden() -> None:
+    base = greeting_snap(extra={"generated_at": "2026-11-26T10:00:00Z"})
+    cand = greeting_snap(extra={"generated_at": "2026-11-26T10:05:00Z"})
+    v = parity.judge(base, cand, [], "0.1.0", golden_with(keys=["generated_at"]))
+    assert v.code == parity.EXIT_PASS
+    assert "2026-11-26T10:00:00Z | 2026-11-26T10:05:00Z" in v.summary
+
+
+def test_env_names_split_on_newline_only() -> None:
+    with pytest.raises(parity.ConfigError) as err:
+        parity.check_env("MCP\rHOST=0.0.0.0\n", {})
+    assert repr("MCP\rHOST") in str(err.value)
+    assert parity.check_env("A=1\r\nB=2\r\n", {}) == ["A", "B"]

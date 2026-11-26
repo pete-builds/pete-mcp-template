@@ -95,13 +95,20 @@ memory or timing.
 would hide a change in where the server listens. The one exception is
 `MCP_TRANSPORT=streamable-http` for a server whose released image defaults to
 stdio, which the template writes itself. The summary lists the env file's
-variable names (never values) and every normalize key and pattern; a name that
-is not plain `[A-Za-z_][A-Za-z0-9_]*` is refused, and a byte order mark is
-dropped first, as docker does. A pattern that matches the empty string is
-refused, as are keys that hold a whole answer. At run time, every golden call's
-baseline answer must still hold at least one non-empty text or number that
-normalization did not touch; otherwise the run is an error, because a fully
-normalized answer would let any change pass.
+variable names (never values); a name that is not plain
+`[A-Za-z_][A-Za-z0-9_]*` is refused, and a byte order mark is dropped first, as
+docker does.
+
+**Normalization contract.** Volatile fields are normalized by key name only:
+`normalize: keys: [...]` in `parity/golden.yaml`, globally or per call.
+Regex patterns are not supported; a golden file that still has `patterns` is an
+error, never silently ignored. A key hides the field it names by design, so
+every difference a key hides is always listed in the summary under "hidden by
+normalization", with the path and both raw values. Read that list: a key that
+names the field that regressed hides the regression, and the list is where it
+shows. Keys that hold a whole answer (`content`, `text`, `result`, ...) are
+refused, and as a backstop every golden call's baseline answer must keep at
+least one non-empty text or number that no key touched, or the run is an error.
 Zero tools on either side is an error, not a pass, and a golden call that
 errors on the released image is flagged, since it proves nothing.
 

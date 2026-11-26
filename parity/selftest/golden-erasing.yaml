@@ -10,4 +10,3 @@ calls:
 
 normalize:
   keys: [greeting]
-  patterns: []

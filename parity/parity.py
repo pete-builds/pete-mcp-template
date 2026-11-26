@@ -334,13 +334,11 @@ class GoldenCall:
     tool: str
     arguments: dict[str, Any]
     keys: list[str] = field(default_factory=list)
-    patterns: list[str] = field(default_factory=list)
 
 
 @dataclass
 class Golden:
     keys: list[str]
-    patterns: list[str]
     calls: list[GoldenCall]
 
 
@@ -410,17 +408,30 @@ def _str_list(value: Any, where: str) -> list[str]:
     return list(value)
 
 
+PATTERNS_REMOVED = "patterns were removed; normalize volatile fields by key"
+
+
+def _normalize_keys(norm: Any, where: str) -> list[str]:
+    """The ``keys`` of a normalize block. Anything else in it is an error."""
+    if norm is None:
+        return []
+    if not isinstance(norm, dict):
+        raise ConfigError(f"{where} must be a mapping")
+    if "patterns" in norm:
+        raise ConfigError(f"{where}.patterns: {PATTERNS_REMOVED}")
+    unknown = sorted(set(norm) - {"keys"})
+    if unknown:
+        raise ConfigError(f"{where}: unknown setting(s) {unknown}; only keys is supported")
+    return _str_list(norm.get("keys"), f"{where}.keys")
+
+
 def load_golden(path: Path) -> Golden:
     if not path.is_file():
         raise ConfigError(f"golden file {path} not found")
     doc = _load_yaml(path) or {}
     if not isinstance(doc, dict):
         raise ConfigError(f"{path} must be a mapping")
-    norm = doc.get("normalize") or {}
-    if not isinstance(norm, dict):
-        raise ConfigError("normalize must be a mapping")
-    keys = _str_list(norm.get("keys"), "normalize.keys")
-    patterns = _str_list(norm.get("patterns"), "normalize.patterns")
+    keys = _normalize_keys(doc.get("normalize"), "normalize")
     calls: list[GoldenCall] = []
     seen: set[str] = set()
     for i, raw in enumerate(doc.get("calls") or []):
@@ -441,33 +452,15 @@ def load_golden(path: Path) -> Golden:
         arguments = raw.get("arguments") or {}
         if not isinstance(arguments, dict):
             raise ConfigError(f"golden call {cid!r}: arguments must be a mapping")
-        call_norm = raw.get("normalize") or {}
-        calls.append(
-            GoldenCall(
-                cid,
-                tool,
-                arguments,
-                _str_list(call_norm.get("keys"), f"{cid}.normalize.keys"),
-                _str_list(call_norm.get("patterns"), f"{cid}.normalize.patterns"),
-            )
-        )
-    for p in patterns + [p for c in calls for p in c.patterns]:
-        try:
-            compiled = re.compile(p)
-        except re.error as exc:
-            raise ConfigError(f"bad normalize pattern {p!r}: {exc}") from exc
-        if compiled.search("") is not None:
-            raise ConfigError(
-                f"normalize pattern {p!r} matches the empty string, so it can match "
-                "anything; anchor it to the volatile text it is meant to hide"
-            )
+        call_keys = _normalize_keys(raw.get("normalize"), f"calls[{i}] ({cid}).normalize")
+        calls.append(GoldenCall(cid, tool, arguments, call_keys))
     for k in keys + [k for c in calls for k in c.keys]:
         if k in STRUCTURAL_KEYS:
             raise ConfigError(
                 f"normalize key {k!r} holds a whole answer, not a volatile field; "
                 "name the field inside it instead"
             )
-    return Golden(keys, patterns, calls)
+    return Golden(keys, calls)
 
 
 def load_expected(path: Path) -> list[Expected]:
@@ -522,17 +515,12 @@ def decode_json_strings(value: Any) -> Any:
     return value
 
 
-def normalize(value: Any, keys: set[str], patterns: list[re.Pattern[str]]) -> Any:
+def normalize(value: Any, keys: set[str]) -> Any:
+    """Replace the value of every key named in ``keys``, at any depth."""
     if isinstance(value, dict):
-        return {
-            k: (NORMALIZED if k in keys else normalize(v, keys, patterns)) for k, v in value.items()
-        }
+        return {k: (NORMALIZED if k in keys else normalize(v, keys)) for k, v in value.items()}
     if isinstance(value, list):
-        return [normalize(v, keys, patterns) for v in value]
-    if isinstance(value, str):
-        for p in patterns:
-            value = p.sub(NORMALIZED, value)
-        return value
+        return [normalize(v, keys) for v in value]
     return value
 
 
@@ -640,8 +628,7 @@ def normalize_calls(calls: dict[str, Any], golden: Golden | None) -> dict[str, A
     for cid, record in calls.items():
         call = by_id.get(cid)
         keys = set(golden.keys) | set(call.keys if call else [])
-        pats = [re.compile(p) for p in golden.patterns + (call.patterns if call else [])]
-        out[cid] = normalize(record, keys, pats)
+        out[cid] = normalize(record, keys)
     return out
 
 
@@ -653,22 +640,36 @@ def normalize_lines(golden: Golden | None) -> list[str]:
     if golden is None:
         return []
     lines = [
-        "Normalized before the diff: keys "
+        "Normalized before the diff (by key): "
         + (", ".join(f"`{k}`" for k in golden.keys) or "none")
-        + "; patterns "
-        + (", ".join(f"`{p}`" for p in golden.patterns) or "none")
         + "."
     ]
     for c in golden.calls:
-        if c.keys or c.patterns:
+        if c.keys:
             lines.append(
-                f"Call `{c.id}` also normalizes keys "
-                + (", ".join(f"`{k}`" for k in c.keys) or "none")
-                + "; patterns "
-                + (", ".join(f"`{p}`" for p in c.patterns) or "none")
-                + "."
+                f"Call `{c.id}` also normalizes keys " + ", ".join(f"`{k}`" for k in c.keys) + "."
             )
     return [*lines, ""]
+
+
+def hidden_differences(
+    base_raw: dict[str, Any],
+    cand_raw: dict[str, Any],
+    base_norm: dict[str, Any],
+    cand_norm: dict[str, Any],
+) -> list[Difference]:
+    """Raw differences in call answers that normalization made equal.
+
+    Normalization only replaces whole values with the same marker, so a raw
+    difference is hidden exactly when no normalized difference sits at its
+    path, above it or below it.
+    """
+    shown = deep_diff(base_norm, cand_norm, ("calls",))
+    return [
+        d
+        for d in deep_diff(base_raw, cand_raw, ("calls",))
+        if not any(covers(n.segs, d.segs) or covers(d.segs, n.segs) for n in shown)
+    ]
 
 
 def _short(value: Any, limit: int = 160) -> str:
@@ -777,12 +778,28 @@ def judge(
     used = {id(e) for _, e in declared}
     unused = [e for e in active if id(e) not in used]
 
+    hidden = hidden_differences(base["calls"], cand["calls"], base_calls, cand_calls)
     n_tools, n_calls = len(cand["tools"]), len(cand["calls"])
     lines.append(
         f"Compared {len(base['tools'])} baseline and {n_tools} candidate tools, "
         f"and {n_calls} golden call(s)."
     )
     lines.append("")
+    if hidden:
+        lines += [
+            f"### {len(hidden)} difference(s) hidden by normalization",
+            "",
+            "These changed between the releases but compare equal because a normalize "
+            "key names them. Read them: a key that names the field that regressed hides "
+            "the regression by design.",
+            "",
+            "| path | baseline (raw) | candidate (raw) |",
+            "|---|---|---|",
+        ]
+        lines += [
+            f"| `{d.path}` | {_short(d.baseline, 80)} | {_short(d.candidate, 80)} |" for d in hidden
+        ]
+        lines.append("")
     if undeclared:
         lines += [
             f"### {len(undeclared)} undeclared difference(s): these fail the check",
@@ -829,7 +846,8 @@ def judge(
     else:
         line = (
             f"parity: PASS against baseline {baseline_label} ({n_tools} tools, "
-            f"{n_calls} golden calls, {len(declared)} declared differences)"
+            f"{n_calls} golden calls, {len(declared)} declared differences, "
+            f"{len(hidden)} hidden by normalization)"
         )
         code = EXIT_PASS
     return Verdict(code, line, "\n".join(lines) + "\n", warnings)
@@ -990,12 +1008,14 @@ def cmd_compare(args: argparse.Namespace) -> int:
 def parse_env_file(text: str) -> list[tuple[str, str | None]]:
     """Names and values in docker --env-file order. A bare NAME has value None."""
     out: list[tuple[str, str | None]] = []
-    for raw in text.splitlines():
-        line = raw.strip()
+    # Split on \n only, as docker does: splitlines() would also split on \r and
+    # other separators and report a name like "MCP\rHOST" as two names.
+    for raw in text.split("\n"):
+        line = raw.rstrip("\r").lstrip()
         if not line or line.startswith("#"):
             continue
         name, sep, value = line.partition("=")
-        out.append((name.strip(), value if sep else None))
+        out.append((name, value if sep else None))
     return out
 
 

@@ -43,6 +43,10 @@ pytest
 
 CI runs on Python {{ python_min_version }}+ across a matrix.
 
+## Release parity
+
+`.github/workflows/parity.yml` compares each change with the last release on GHCR: the tool list, every tool's description and schema, and the read-only calls in `parity/golden.yaml`. Any difference fails unless `parity/expected.yaml` declares it with a reason. Both containers run on the dummy values in `parity/parity.env`, so add your server's variables there with placeholder values. See the [pete-mcp-template README](https://github.com/pete-builds/pete-mcp-template#release-parity-check) for what it does and does not prove.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

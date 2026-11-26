@@ -1,0 +1,4 @@
+# The parity client. Pinned exactly; requirements.txt is compiled from this
+# file with hashes (see the header of requirements.txt for the command).
+mcp==2.3.0
+pyyaml==6.0.4

@@ -1,0 +1,9 @@
+# Same rule set as the generated servers (template/pyproject.toml.jinja).
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "C4", "S", "RUF"]
+
+[lint.per-file-ignores]
+"test_parity.py" = ["S101"]

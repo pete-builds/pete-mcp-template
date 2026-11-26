@@ -1,0 +1,12 @@
+# Golden set for the template's own parity controls. One read-only call, so
+# the "argument silently dropped" mutant has an answer to change.
+calls:
+  - id: hello-named
+    tool: hello
+    arguments:
+      name: parity
+    read_only: true
+
+normalize:
+  keys: []
+  patterns: []

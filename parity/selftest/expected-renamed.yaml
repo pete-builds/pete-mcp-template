@@ -1,0 +1,9 @@
+# Declares the renamed-parameter mutant as intended, to prove a declared
+# difference passes and is listed while an undeclared one fails.
+changes:
+  - change: tools.hello.inputSchema.properties
+    baseline: 0.1.0
+    reason: Renamed the hello tool's argument from name to who, on purpose.
+  - change: calls.hello-named
+    baseline: 0.1.0
+    reason: The golden call still sends name, which the renamed tool now rejects.

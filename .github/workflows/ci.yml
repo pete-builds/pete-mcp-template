@@ -133,7 +133,10 @@ jobs:
           ruff format --check parity
 
       - name: Shellcheck
-        run: shellcheck parity/run.sh parity/selftest/selftest.sh
+        run: shellcheck parity/*.sh parity/selftest/*.sh
+
+      - name: Final verdict step (PASS and skip exit 0, all else non-zero)
+        run: bash parity/selftest/verdict-test.sh
 
       - name: pytest
         run: python -m pytest -v -p no:cacheprovider parity
@@ -197,7 +200,10 @@ jobs:
             "$nogit" "$RUNNER_TEMP/unpinned"
           grep -n 'mcp-parity.yml@' "$RUNNER_TEMP/unpinned/.github/workflows/parity.yml"
           rc=0
-          python scripts/validate_render.py "$RUNNER_TEMP/unpinned" || rc=$?
+          out="$(python scripts/validate_render.py "$RUNNER_TEMP/unpinned" 2>&1)" || rc=$?
+          # Print the validator's verdict without its ::error:: prefix, so the
+          # expected rejection does not show up as an annotation on the run.
+          printf '%s\n' "$out" | sed 's/^::error::/validator: /'
           if [ "$rc" -eq 0 ]; then
             echo "control: FAIL (an unpinned parity.yml passed validation)"
             exit 1

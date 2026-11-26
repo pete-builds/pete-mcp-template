@@ -195,21 +195,11 @@ jobs:
         id: final
         if: always()
         run: |
-          verdict_file="$RUNNER_TEMP/parity/verdict.txt"
-          line=""
-          if [ -s "$verdict_file" ]; then
-            line="$(tail -n 1 "$verdict_file")"
+          if [ -f parity-tool/parity/verdict.sh ]; then
+            bash parity-tool/parity/verdict.sh "$RUNNER_TEMP/parity/verdict.txt"
+          else
+            line="parity: ERROR the parity client was never checked out (see the failed step above)"
+            echo "verdict=$line" >> "$GITHUB_OUTPUT"
+            echo "$line"
+            exit 1
           fi
-          if [ -z "$line" ]; then
-            line="parity: ERROR the check stopped before reaching a verdict (see the failed step above)"
-          fi
-          echo "verdict=$line" >> "$GITHUB_OUTPUT"
-          {
-            echo ""
-            echo "**$line**"
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "$line"
-          case "$line" in
-            "parity: PASS "* | "parity: no baseline image, first release, skipped") exit 0 ;;
-            *) exit 1 ;;
-          esac
